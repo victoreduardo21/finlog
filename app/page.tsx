@@ -1,69 +1,215 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState('');
+  const [senha, setSenha] = useState('');
+  const [carregando, setCarregando] = useState(false);
+  const [mensagemErro, setMensagemErro] = useState('');
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMensagemErro('');
+    setCarregando(true);
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+    try {
+      const resposta = await fetch(`${apiUrl}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, senha }),
+      });
+
+      const dados = await resposta.json();
+
+      if (!resposta.ok) {
+        throw new Error(dados.mensagem || 'E-mail ou senha inválidos.');
+      }
+
+      if (dados.token) {
+        localStorage.setItem('token', dados.token);
+        localStorage.setItem('usuario', JSON.stringify(dados.usuario));
+        router.push('/dashboard');
+      }
+    } catch (erro: any) {
+      setMensagemErro(erro.message || 'Erro ao conectar com o servidor.');
+    } finally {
+      setCarregando(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
+    <div style={estilos.pagina}>
+      {/* --- Lado Esquerdo: Banner do Sistema --- */}
+      <div style={estilos.painelEsquerdo}>
+        <div style={estilos.conteudoBanner}>
+          <div style={estilos.badge}>Módulo Financeiro Logístico v0.3</div>
+          <h1 style={estilos.tituloBanner}>
+            Controle total sobre fretes, pagamentos e conciliação.
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p style={estilos.descricaoBanner}>
+            Gestão de faturas, baixa por placa e verificação de duplicidades em tempo real.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </div>
+
+      {/* --- Lado Direito: Formulário de Login --- */}
+      <div style={estilos.painelDireito}>
+        <div style={estilos.containerFormulario}>
+          <div style={estilos.cabecalhoFormulario}>
+            <div style={estilos.logoIcone}>⚡</div>
+            <h2 style={estilos.tituloFormulario}>Acesse sua conta</h2>
+            <p style={estilos.subtituloFormulario}>Informe suas credenciais para acessar</p>
+          </div>
+
+          {mensagemErro && (
+            <div style={estilos.alertaErro}>
+              <span>⚠️</span> {mensagemErro}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} style={estilos.formulario}>
+            <div style={estilos.grupoInput}>
+              <label style={estilos.label} htmlFor="email">E-mail corporativo</label>
+              <input
+                id="email"
+                type="email"
+                placeholder="seu.nome@empresa.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                style={estilos.input}
+              />
+            </div>
+
+            <div style={estilos.grupoInput}>
+              <label style={estilos.label} htmlFor="senha">Senha de acesso</label>
+              <input
+                id="senha"
+                type="password"
+                placeholder="••••••••••••"
+                value={senha}
+                onChange={(e) => setSenha(e.target.value)}
+                required
+                style={estilos.input}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={carregando}
+              style={{
+                ...estilos.botaoSubmit,
+                opacity: carregando ? 0.75 : 1,
+                cursor: carregando ? 'wait' : 'pointer',
+              }}
+            >
+              {carregando ? 'Autenticando...' : 'Entrar na Plataforma →'}
+            </button>
+          </form>
         </div>
-      </main>
+      </div>
     </div>
   );
 }
+
+// --- Estilos Corrigidos para Maior Legibilidade e Alto Contraste ---
+const estilos: { [key: string]: React.CSSProperties } = {
+  pagina: {
+    display: 'flex',
+    minHeight: '100vh',
+    width: '100vw',
+    fontFamily: "'Inter', -apple-system, sans-serif",
+    backgroundColor: '#0f172a',
+  },
+  painelEsquerdo: {
+    flex: '1.2',
+    background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '4rem',
+    color: '#ffffff',
+  },
+  conteudoBanner: { maxWidth: '560px' },
+  badge: {
+    display: 'inline-block',
+    padding: '0.4rem 0.9rem',
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    color: '#93c5fd',
+    borderRadius: '20px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    marginBottom: '1.5rem',
+  },
+  tituloBanner: { fontSize: '2.2rem', fontWeight: '800', lineHeight: '1.2', marginBottom: '1.2rem' },
+  descricaoBanner: { fontSize: '1rem', color: '#94a3b8', lineHeight: '1.6' },
+  painelDireito: {
+    flex: '1',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '2rem',
+    backgroundColor: '#ffffff',
+  },
+  containerFormulario: { width: '100%', maxWidth: '380px' },
+  cabecalhoFormulario: { marginBottom: '2rem' },
+  logoIcone: {
+    width: '42px',
+    height: '42px',
+    backgroundColor: '#2563eb',
+    color: '#ffffff',
+    borderRadius: '10px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '1.3rem',
+    marginBottom: '1rem',
+  },
+  tituloFormulario: { margin: 0, fontSize: '1.6rem', fontWeight: '700', color: '#0f172a' },
+  subtituloFormulario: { margin: '0.4rem 0 0 0', fontSize: '0.875rem', color: '#64748b' },
+  alertaErro: {
+    backgroundColor: '#fef2f2',
+    color: '#b91c1c',
+    border: '1px solid #fecaca',
+    padding: '0.75rem',
+    borderRadius: '8px',
+    fontSize: '0.875rem',
+    marginBottom: '1.5rem',
+  },
+  formulario: { display: 'flex', flexDirection: 'column', gap: '1.25rem' },
+  grupoInput: { display: 'flex', flexDirection: 'column', gap: '0.4rem' },
+  label: { fontSize: '0.85rem', fontWeight: '600', color: '#334155' },
+
+  // --- AQUI ESTÁ A CORREÇÃO DO INPUT ---
+  input: {
+    width: '100%',
+    padding: '0.75rem 0.9rem',
+    borderRadius: '8px',
+    border: '1px solid #cbd5e1',
+    backgroundColor: '#ffffff', // Fundo branco estrito
+    color: '#0f172a',            // Texto escuro (azul bem escuro/quase preto)
+    fontSize: '0.95rem',
+    fontWeight: '500',
+    outline: 'none',
+    boxSizing: 'border-box',
+  },
+
+  botaoSubmit: {
+    width: '100%',
+    padding: '0.85rem',
+    backgroundColor: '#2563eb',
+    color: '#ffffff',
+    border: 'none',
+    borderRadius: '8px',
+    fontSize: '0.95rem',
+    fontWeight: '600',
+    marginTop: '0.5rem',
+  },
+};
