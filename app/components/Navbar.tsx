@@ -24,7 +24,6 @@ export default function Sidebar({ usuario }: SidebarProps) {
 
   // Lista dos 10 links de navegação solicitados
   const itensMenu = [
-    { nome: 'Visão Geral', rota: '/dashboard' },
     { nome: 'Importar Planilha', rota: '/importacao' },
     { nome: 'Baixa por Placa', rota: '/baixa-placa' },
     { nome: 'Cadastro de Clientes', rota: '/clientes' },
