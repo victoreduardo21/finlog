@@ -35,7 +35,7 @@ export default function LoginPage() {
       if (dados.token) {
         localStorage.setItem('token', dados.token);
         localStorage.setItem('usuario', JSON.stringify(dados.usuario));
-        router.push('/dashboard');
+        router.push('/importacao');
       }
     } catch (erro: any) {
       setMensagemErro(erro.message || 'Erro ao conectar com o servidor.');
