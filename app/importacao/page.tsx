@@ -2,26 +2,57 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (TRATAMENTO DE ERRO HTML FIX)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (COM BARRA LATERAL E TRATAMENTO FIX)
  * Localização no VS Code: empresa/app/importacao/page.tsx
- * Descrição: Trata a resposta da API garantindo que erros em formato HTML
- *            sejam capturados sem quebrar o parser JSON do navegador.
+ * Tecnologias: Next.js (React / TypeScript)
+ * Descrição: Renderiza o menu de navegação lateral, permite selecionar planilhas
+ *            em formato Excel (.xlsx) e trata erros de resposta HTML com segurança.
  * ============================================================================
  */
 
-import React, { useState } from 'react';
-import Sidebar from '../components/Navbar'; // ou do teu componente de menu
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+
+// IMPORTAÇÃO DO COMPONENTE DE BARRA LATERAL DO PAINEL OPERACIONAL
+import Sidebar from './../components/Navbar';
 
 export default function ImportacaoPage() {
+  const router = useRouter();
+
+  // Estados de sessão do utilizador
+  const [usuarioLogado, setUsuarioLogado] = useState<any>(null);
+
+  // Estados do formulário de upload de arquivos
   const [arquivo, setArquivo] = useState<File | null>(null);
   const [carregando, setCarregando] = useState(false);
-  const [mensagemStatus, setMensagemStatus] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
+  const [mensagemStatus, setMensagemStatus] = useState<{
+    tipo: 'sucesso' | 'erro';
+    texto: string;
+  } | null>(null);
 
-  // URL base da API do teu Backend (Certifica-te que está apontando para o Render em produção)
+  // Define a URL base da API (usando variável de ambiente do Vercel/Render ou localhost)
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+  // 1. Efeito para verificar a autenticação no localStorage ao carregar a página
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const usuarioSalvo = localStorage.getItem('usuario');
+
+    if (!token || !usuarioSalvo) {
+      router.push('/');
+      return;
+    }
+
+    try {
+      setUsuarioLogado(JSON.parse(usuarioSalvo));
+    } catch (e) {
+      console.error('Erro ao carregar dados da sessão local.');
+      router.push('/');
+    }
+  }, [router]);
+
   /**
-   * Captura o arquivo selecionado pelo usuário
+   * Captura o ficheiro selecionado pelo utilizador no input
    */
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -31,40 +62,45 @@ export default function ImportacaoPage() {
   };
 
   /**
-   * Envia a planilha para o backend
+   * Submete a planilha para o servidor backend
    */
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!arquivo) {
-      setMensagemStatus({ tipo: 'erro', texto: '⚠️ Por favor, selecione uma planilha Excel (.xlsx) antes de carregar.' });
+      setMensagemStatus({
+        tipo: 'erro',
+        texto: '⚠️ Por favor, selecione uma planilha Excel (.xlsx) antes de carregar.',
+      });
       return;
     }
 
     setCarregando(true);
     setMensagemStatus(null);
 
-    // Cria o formulário em formato Multipart/Data para envio de arquivo
+    // Prepara o formulário Multipart/Form-Data para envio de arquivo
     const formData = new FormData();
-    formData.append('file', arquivo); // ou 'planilha', conforme configurado no backend
+    formData.append('file', arquivo);
 
     try {
-      // Faz o pedido para o endpoint de upload no backend
+      // Faz a requisição para a rota do backend Express
       const resposta = await fetch(`${apiUrl}/importacao/upload`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token') || ''}`,
+          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
         },
         body: formData,
       });
 
-      // Lê a resposta como texto primeiro para evitar a falha do JSON.parse se for HTML
+      // Lê a resposta como texto primeiro para evitar a falha do JSON.parse se o servidor responder em HTML
       const textoResposta = await resposta.text();
 
-      // Se a resposta começar com '<', o servidor devolveu uma página HTML (Ex: 404 Not Found ou 500 Internal Error)
+      // Verifica se a resposta iniciou com HTML (ex: 404 Not Found ou erro interno)
       if (textoResposta.trim().startsWith('<')) {
-        console.error('❌ O servidor devolveu uma resposta em HTML:', textoResposta);
-        throw new Error(`A rota de importação (${apiUrl}/importacao/upload) não foi encontrada ou o backend está inacessível.`);
+        console.error('❌ Resposta HTML recebida do servidor:', textoResposta);
+        throw new Error(
+          `A rota (${apiUrl}/importacao/upload) não foi encontrada ou o servidor backend na porta 3001 está offline.`
+        );
       }
 
       // Converte o texto para JSON com segurança
@@ -79,11 +115,11 @@ export default function ImportacaoPage() {
       } else {
         setMensagemStatus({
           tipo: 'erro',
-          texto: `❌ Erro ao importar planilha: ${resultado.mensagem || 'Falha no processamento dos dados.'}`,
+          texto: `❌ ${resultado.mensagem || 'Erro ao processar os dados da planilha.'}`,
         });
       }
     } catch (erro: any) {
-      console.error('Erro no upload da planilha:', erro);
+      console.error('Erro ao enviar planilha:', erro);
       setMensagemStatus({
         tipo: 'erro',
         texto: `❌ Erro ao importar planilha: ${erro.message || 'Erro de conexão com o servidor.'}`,
@@ -95,7 +131,13 @@ export default function ImportacaoPage() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc', display: 'flex', color: '#0f172a' }}>
-      <main style={{ flex: 1, padding: '2rem 3rem' }}>
+      
+      {/* 1. BARRA DE NAVEGAÇÃO LATERAL (RENDERIZADA NO LADO ESQUERDO DA TELA) */}
+      <Sidebar usuario={usuarioLogado} />
+
+      {/* 2. CONTEÚDO PRINCIPAL DA PÁGINA (COM MARGEM ESQUERDA PARA NÃO COBRIR O MENU) */}
+      <main style={{ marginLeft: '250px', flex: 1, padding: '2rem 3rem' }}>
+        
         <header style={{ marginBottom: '2rem' }}>
           <h1 style={{ fontSize: '1.75rem', fontWeight: '800', color: '#0f172a', margin: 0 }}>
             Importação e Fechamento de Minutas
@@ -105,6 +147,7 @@ export default function ImportacaoPage() {
           </p>
         </header>
 
+        {/* ÁREA DE CARREGAMENTO DE PLANILHA */}
         <section style={estilos.cardContainer}>
           <form onSubmit={handleUpload} style={estilos.areaDrop}>
             <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>⚡</div>
@@ -136,6 +179,7 @@ export default function ImportacaoPage() {
             </div>
           </form>
 
+          {/* MENSAGEM DE FEEDBACK VISUAL */}
           {mensagemStatus && (
             <div
               style={{
@@ -160,6 +204,7 @@ export default function ImportacaoPage() {
   );
 }
 
+// Estilos padronizados
 const estilos: { [key: string]: React.CSSProperties } = {
   cardContainer: {
     backgroundColor: '#ffffff',
