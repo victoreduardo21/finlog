@@ -54,7 +54,7 @@ export default function CadastroUsuarioPage() {
         setIsAdmin(false);
         setMensagemStatus('⚠️ Acesso restrito! Apenas Administradores podem aceder a esta página.');
         setTimeout(() => {
-          router.push('/dashboard');
+          router.push('/importacao');
         }, 3000);
       }
     } catch (e) {
