@@ -1,21 +1,36 @@
 'use client';
 
+/**
+ * ============================================================================
+ * TELA: LOGIN DO SISTEMA FINANCEIRO LOGÍSTICO
+ * Localização no VS Code: empresa/app/page.tsx (ou app/page.tsx)
+ * Tecnologias: Next.js (React), TypeScript
+ * Descrição: Formulário exclusivo de autenticação de utilizadores cadastrados.
+ * ============================================================================
+ */
+
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
   const router = useRouter();
+
+  // Estados apenas para o fluxo de login
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [mensagemErro, setMensagemErro] = useState('');
 
+  // URL base da API do teu Backend
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+
+  /**
+   * Função para processar a autenticação do utilizador
+   */
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setMensagemErro('');
     setCarregando(true);
-
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
     try {
       const resposta = await fetch(`${apiUrl}/auth/login`, {
@@ -32,6 +47,7 @@ export default function LoginPage() {
         throw new Error(dados.mensagem || 'E-mail ou senha inválidos.');
       }
 
+      // Se a autenticação for bem-sucedida, salva a sessão e redireciona
       if (dados.token) {
         localStorage.setItem('token', dados.token);
         localStorage.setItem('usuario', JSON.stringify(dados.usuario));
@@ -119,7 +135,7 @@ export default function LoginPage() {
   );
 }
 
-// --- Estilos Corrigidos para Maior Legibilidade e Alto Contraste ---
+// --- Estilos Corrigidos com Fundo Branco nos Inputs ---
 const estilos: { [key: string]: React.CSSProperties } = {
   pagina: {
     display: 'flex',
@@ -186,21 +202,18 @@ const estilos: { [key: string]: React.CSSProperties } = {
   formulario: { display: 'flex', flexDirection: 'column', gap: '1.25rem' },
   grupoInput: { display: 'flex', flexDirection: 'column', gap: '0.4rem' },
   label: { fontSize: '0.85rem', fontWeight: '600', color: '#334155' },
-
-  // --- AQUI ESTÁ A CORREÇÃO DO INPUT ---
   input: {
     width: '100%',
     padding: '0.75rem 0.9rem',
     borderRadius: '8px',
     border: '1px solid #cbd5e1',
-    backgroundColor: '#ffffff', // Fundo branco estrito
-    color: '#0f172a',            // Texto escuro (azul bem escuro/quase preto)
+    backgroundColor: '#ffffff',
+    color: '#0f172a', // Texto escuro e bem legível
     fontSize: '0.95rem',
     fontWeight: '500',
     outline: 'none',
     boxSizing: 'border-box',
   },
-
   botaoSubmit: {
     width: '100%',
     padding: '0.85rem',
