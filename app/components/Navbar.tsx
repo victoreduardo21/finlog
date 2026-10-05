@@ -30,6 +30,7 @@ export default function Sidebar({ usuario }: SidebarProps) {
     { nome: 'Cadastro de caminhoneiros', rota: '/caminhoneiros' },
     { nome: 'Rotas e Valores', rota: '/rotas' },
     { nome: 'Usuários', rota: '/usuarios' },
+    { nome: 'Configurações', rota: '/configuracoes' },
   ];
 
   // Função para encerrar a sessão

@@ -1,4 +1,14 @@
 'use client';
+
+/**
+ * ============================================================================
+ * TELA: IMPORTAÇÃO DE MINUTAS E FECHAMENTO
+ * Localização no projeto: empresa/app/importacao/page.tsx
+ * Descrição: Exibe a lista completa de minutas da planilha, marcando de forma
+ *            evidente quais contêineres já foram pagos anteriormente.
+ * ============================================================================
+ */
+
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
@@ -10,15 +20,17 @@ interface ItemAnalisado {
   conteiner: string;
   terminalOrigem: string;
   terminalDestino: string;
+  dataOp: string;
   dataOpFormatada: string;
+  dataVencimento: string;
   tipoPgto: string;
-  dataPagamentoPrevista: string;
   valorBruto: number;
   valorRpa: number;
   descontoAVista: number;
   valorLiquidoFinal: number;
   categoriaPgto: 'PRAZO' | 'AVISTA_INTEGRAL';
   isDuplicado: boolean;
+  jaPagoNoBanco: boolean;
   mensagemAlerta?: string;
 }
 
@@ -26,26 +38,23 @@ export default function ImportacaoPage() {
   const router = useRouter();
   const [usuario, setUsuario] = useState<{ nome: string; perfil: string } | null>(null);
   const [dadosAnalisados, setDadosAnalisados] = useState<ItemAnalisado[]>([]);
-  const [abaAtiva, setAbaAtiva] = useState<'TODOS' | 'PRAZO' | 'AVISTA_INTEGRAL' | 'DUPLICADOS'>('TODOS');
+  const [abaAtiva, setAbaAtiva] = useState<'TODOS' | 'PRAZO' | 'AVISTA_INTEGRAL' | 'DUPLICADOS' | 'JA_PAGOS'>('TODOS');
   const [nomeFicheiro, setNomeFicheiro] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [mensagemStatus, setMensagemStatus] = useState('');
 
   const [totais, setTotais] = useState({
-    // A Prazo
     brutoPrazo: 0,
     rpaPrazo: 0,
     liquidoPrazo: 0,
     qtdPrazo: 0,
-    // À Vista
     brutoAvista: 0,
     rpaAvista: 0,
     descontoAvista: 0,
     liquidoAvista: 0,
     qtdAvista: 0,
-    // Geral
-    totalGeralLiquido: 0,
     duplicadosCount: 0,
+    jaPagosCount: 0,
     dataQuintaFeira: '',
   });
 
@@ -53,6 +62,8 @@ export default function ImportacaoPage() {
     if (typeof dataExcel === 'number') {
       return new Date(Math.round((dataExcel - 25569) * 86400 * 1000));
     }
+    if (!dataExcel) return new Date();
+
     const partes = String(dataExcel).split('/');
     if (partes.length === 3) {
       return new Date(Number(partes[2]), Number(partes[1]) - 1, Number(partes[0]));
@@ -73,69 +84,59 @@ export default function ImportacaoPage() {
     let sumBrutoPrazo = 0, sumRpaPrazo = 0, sumLiquidoPrazo = 0, countPrazo = 0;
     let sumBrutoAvista = 0, sumRpaAvista = 0, sumDescAvista = 0, sumLiquidoAvista = 0, countAvista = 0;
     let numDuplicados = 0;
-
-    const mapaContagem = new Map<string, number>();
-    linhas.forEach((l) => {
-      const cav = String(l.CAVALO || l.cavalo || '').toUpperCase().trim();
-      const cont = String(l.CONTEINER || l.conteiner || '').trim();
-      const orig = String(l['TERMINAL ORIGEM'] || l.terminalOrigem || '').trim();
-      const dest = String(l['TERMINAL DESTINO'] || l.terminalDestino || '').trim();
-      const chave = `${cav}_${cont}_${orig}_${dest}`;
-      mapaContagem.set(chave, (mapaContagem.get(chave) || 0) + 1);
-    });
+    let numJaPagos = 0;
 
     const analisados: ItemAnalisado[] = linhas.map((linha) => {
-      // Lê o Valor Bruto (suporta 'Valor Bruto', 'valor a pagar' ou 'FRETE')
-      const valorBruto = Number(linha['Valor Bruto'] ?? linha['valor a pagar'] ?? linha.FRETE ?? linha.frete ?? 0);
+      const valorBruto = Number(linha.valorBruto ?? linha['Valor Bruto'] ?? linha['valor a pagar'] ?? linha.FRETE ?? 0);
       
-      const rawDataOp = linha['DATA DA OP'] || linha.dataOp;
-      const dataOp = parseDataExcel(rawDataOp);
-      const tipoPgtoBruto = String(linha['TIPO DE PGTO'] || linha.tipoPgto || '').toUpperCase().trim();
-      const cavaloPlaca = String(linha.CAVALO || linha.cavalo || '-').toUpperCase().trim();
-      const refCode = String(linha.REF || linha.ref || '-');
-      const conteinerCode = String(linha.CONTEINER || linha.conteiner || '-').trim();
-      const origem = String(linha['TERMINAL ORIGEM'] || linha.terminalOrigem || '-').trim();
-      const destino = String(linha['TERMINAL DESTINO'] || linha.terminalDestino || '-').trim();
+      const rawDataOp = linha.dataOp || linha['DATA DA OP'] || linha['DATA DE ENTREGA'];
+      const objectoDataOp = parseDataExcel(rawDataOp);
+      
+      const tipoPgtoBruto = String(linha.tipoPgto || linha['TIPO DE PGTO'] || '').toUpperCase().trim();
+      const cavaloPlaca = String(linha.cavalo || linha.CAVALO || linha.placa || '-').toUpperCase().trim();
+      const refCode = String(linha.ref || linha.REF || '-');
+      const conteinerCode = String(linha.conteiner || linha.CONTEINER || '-').trim();
+      const origem = String(linha.terminalOrigem || linha['TERMINAL ORIGEM'] || '-').trim();
+      const destino = String(linha.terminalDestino || linha['TERMINAL DESTINO'] || '-').trim();
 
-      const chaveUnica = `${cavaloPlaca}_${conteinerCode}_${origem}_${destino}`;
-      const qtdRepeticoes = mapaContagem.get(chaveUnica) || 1;
+      const jaPagoNoBanco = Boolean(linha.jaPagoNoBanco || linha.statusPagamento === 'PAGO');
+      if (jaPagoNoBanco) numJaPagos++;
 
-      const ehDuplicado = qtdRepeticoes > 1 || Boolean(linha.isDuplicado);
+      const ehDuplicado = Boolean(linha.isDuplicado) && !jaPagoNoBanco;
       if (ehDuplicado) numDuplicados++;
 
-      // 1. Cálculo de RPA Fijo de 2,7%
-      const valorRpa = valorBruto * 0.027;
+      const valorRpa = Number(linha.valorRpa ?? (valorBruto * 0.027));
+      const isAVista = tipoPgtoBruto.includes('AVISTA') || tipoPgtoBruto.includes('INTEGRAL') || tipoPgtoBruto.includes('A VISTA');
+      const descontoAVista = Number(linha.descontoAVista ?? (isAVista ? valorBruto * 0.04 : 0));
+      const valorLiquidoFinal = Number(linha.valorLiquidoFinal ?? (valorBruto - valorRpa - descontoAVista));
 
       let categoriaPgto: 'PRAZO' | 'AVISTA_INTEGRAL' = 'PRAZO';
-      let dataPagamentoPrevista = '';
-      let descontoAVista = 0;
-
-      const dataOpStr = dataOp.toLocaleDateString('pt-BR');
-      const quintaStr = proximaQuinta.toLocaleDateString('pt-BR');
-
-      const isAVista = tipoPgtoBruto.includes('AVISTA') || tipoPgtoBruto.includes('INTEGRAL') || tipoPgtoBruto.includes('A VISTA');
 
       if (isAVista) {
         categoriaPgto = 'AVISTA_INTEGRAL';
-        dataPagamentoPrevista = 'HOJE / IMEDIATO';
-        descontoAVista = valorBruto * 0.04; // 4% de taxa de adiantamento à vista
-        
-        sumBrutoAvista += valorBruto;
-        sumRpaAvista += valorRpa;
-        sumDescAvista += descontoAVista;
-        sumLiquidoAvista += (valorBruto - valorRpa - descontoAVista);
-        countAvista++;
+        if (!jaPagoNoBanco) {
+          sumBrutoAvista += valorBruto;
+          sumRpaAvista += valorRpa;
+          sumDescAvista += descontoAVista;
+          sumLiquidoAvista += valorLiquidoFinal;
+          countAvista++;
+        }
       } else {
         categoriaPgto = 'PRAZO';
-        dataPagamentoPrevista = quintaStr;
-        
-        sumBrutoPrazo += valorBruto;
-        sumRpaPrazo += valorRpa;
-        sumLiquidoPrazo += (valorBruto - valorRpa);
-        countPrazo++;
+        if (!jaPagoNoBanco) {
+          sumBrutoPrazo += valorBruto;
+          sumRpaPrazo += valorRpa;
+          sumLiquidoPrazo += valorLiquidoFinal;
+          countPrazo++;
+        }
       }
 
-      const valorLiquidoFinal = valorBruto - valorRpa - descontoAVista;
+      let mensagemAlerta = '✅ Registo Pendente';
+      if (jaPagoNoBanco) {
+        mensagemAlerta = `⛔ PAGO: Contêiner ${conteinerCode} (Placa ${cavaloPlaca}) já baixado!`;
+      } else if (ehDuplicado) {
+        mensagemAlerta = `⚠️ Contêiner repetido`;
+      }
 
       return {
         ref: refCode,
@@ -143,16 +144,18 @@ export default function ImportacaoPage() {
         conteiner: conteinerCode,
         terminalOrigem: origem,
         terminalDestino: destino,
-        dataOpFormatada: dataOpStr,
+        dataOp: objectoDataOp.toISOString(),
+        dataOpFormatada: objectoDataOp.toLocaleDateString('pt-BR'),
+        dataVencimento: proximaQuinta.toISOString(),
         tipoPgto: tipoPgtoBruto,
-        dataPagamentoPrevista,
         valorBruto,
         valorRpa,
         descontoAVista,
         valorLiquidoFinal,
         categoriaPgto,
         isDuplicado: ehDuplicado,
-        mensagemAlerta: ehDuplicado ? `⚠️ Container ${conteinerCode} repetido (${qtdRepeticoes}x na planilha)` : '✅ Registo Pendente',
+        jaPagoNoBanco,
+        mensagemAlerta,
       };
     });
 
@@ -167,15 +170,15 @@ export default function ImportacaoPage() {
       descontoAvista: sumDescAvista,
       liquidoAvista: sumLiquidoAvista,
       qtdAvista: countAvista,
-      totalGeralLiquido: sumLiquidoPrazo + sumLiquidoAvista,
       duplicadosCount: numDuplicados,
+      jaPagosCount: numJaPagos,
       dataQuintaFeira: proximaQuinta.toLocaleDateString('pt-BR'),
     });
   }, []);
 
   const carregarMinutasDoBanco = useCallback(async () => {
     setCarregando(true);
-    setMensagemStatus('⏳ A carregar minutas pendentes...');
+    setMensagemStatus('⏳ A carregar minutas da base de dados...');
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -186,13 +189,13 @@ export default function ImportacaoPage() {
       if (resposta.ok && resultado.dados) {
         processarListaMinutas(resultado.dados);
         if (resultado.dados.length === 0) {
-          setMensagemStatus('🎉 Todas as minutas foram pagas ou não há pendências!');
+          setMensagemStatus('🎉 Nenhuma minuta pendente no banco de dados!');
         } else {
-          setMensagemStatus(`✅ Exibindo ${resultado.dados.length} minuta(s) pendente(s) de pagamento.`);
+          setMensagemStatus(`✅ Exibindo ${resultado.dados.length} minuta(s) pendente(s).`);
         }
       }
     } catch (erro: any) {
-      setMensagemStatus('⚠️ Falha ao conectar ao servidor.');
+      setMensagemStatus('⚠️ Falha ao conectar ao servidor backend na porta 3001.');
     } finally {
       setCarregando(false);
     }
@@ -212,7 +215,7 @@ export default function ImportacaoPage() {
 
   const analisarEGravarPlanilha = async (dadosPlanilha: any[]) => {
     setCarregando(true);
-    setMensagemStatus('⏳ A analisar e atualizar dados no sistema...');
+    setMensagemStatus('⏳ A analisar planilha e a cruzar com a base de dados...');
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
@@ -224,7 +227,7 @@ export default function ImportacaoPage() {
       });
 
       const resultadoAnalise = await resAnalise.json();
-      if (!resAnalise.ok) throw new Error(resultadoAnalise.mensagem || 'Erro ao analisar os dados.');
+      if (!resAnalise.ok) throw new Error(resultadoAnalise.mensagem || 'Erro ao analisar a planilha.');
 
       const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
         method: 'POST',
@@ -233,13 +236,15 @@ export default function ImportacaoPage() {
       });
 
       const resultadoConfirmar = await resConfirmar.json();
-      if (!resConfirmar.ok) throw new Error(resultadoConfirmar.mensagem || 'Erro ao atualizar a base.');
+      if (!resConfirmar.ok) throw new Error(resultadoConfirmar.mensagem || 'Erro ao gravar os dados.');
 
-      if (resultadoConfirmar.dadosAtualizados) {
-        processarListaMinutas(resultadoConfirmar.dadosAtualizados);
+      if (resultadoAnalise.lancamentos) {
+        processarListaMinutas(resultadoAnalise.lancamentos);
       }
 
-      setMensagemStatus(`🎉 Planilha importada com sucesso! Total de minutas pendentes: ${resultadoConfirmar.criados}`);
+      setMensagemStatus(
+        `🎉 Processamento concluído! ${resultadoConfirmar.criados || 0} novo(s) contêiner(es) cadastrado(s). ${resultadoAnalise.qtdJaPagos || 0} contêiner(es) já foram PAGOS e foram apontados!`
+      );
     } catch (erro: any) {
       setMensagemStatus(`❌ Erro ao importar planilha: ${erro.message}`);
     } finally {
@@ -253,7 +258,7 @@ export default function ImportacaoPage() {
 
     setNomeFicheiro(file.name);
     setCarregando(true);
-    setMensagemStatus('⏳ A ler a planilha...');
+    setMensagemStatus('⏳ A ler ficheiro Excel...');
 
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -274,14 +279,15 @@ export default function ImportacaoPage() {
   };
 
   const dadosFiltrados = dadosAnalisados.filter((item) => {
-    if (abaAtiva === 'PRAZO') return item.categoriaPgto === 'PRAZO';
-    if (abaAtiva === 'AVISTA_INTEGRAL') return item.categoriaPgto === 'AVISTA_INTEGRAL';
-    if (abaAtiva === 'DUPLICADOS') return item.isDuplicado;
+    if (abaAtiva === 'PRAZO') return item.categoriaPgto === 'PRAZO' && !item.jaPagoNoBanco;
+    if (abaAtiva === 'AVISTA_INTEGRAL') return item.categoriaPgto === 'AVISTA_INTEGRAL' && !item.jaPagoNoBanco;
+    if (abaAtiva === 'DUPLICADOS') return item.isDuplicado && !item.jaPagoNoBanco;
+    if (abaAtiva === 'JA_PAGOS') return item.jaPagoNoBanco;
     return true;
   });
 
   const formatarMoeda = (valor: number) => {
-    return valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    return (valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
   if (!usuario) return null;
@@ -292,23 +298,23 @@ export default function ImportacaoPage() {
 
       <main style={{ marginLeft: '260px', flex: 1, padding: '2rem 3rem' }}>
         <header style={{ marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: '700', color: '#0f172a', margin: 0 }}>
+          <h1 style={{ fontSize: '1.75rem', fontWeight: '800', color: '#0f172a', margin: 0 }}>
             Importação e Fechamento de Minutas
           </h1>
           <p style={{ color: '#64748b', margin: '0.25rem 0 0 0', fontSize: '0.9rem' }}>
-            Análise automática de Valor Bruto e Valor Líquido (RPA 2,7% e Taxa 4% À Vista)
+            Acompanhamento em tempo real com validação e apontamento de contêineres já pagos
           </p>
         </header>
 
-        {/* Upload da Planilha */}
+        {/* ÁREA DE UPLOAD */}
         <section style={estilos.cardUpload}>
           <div style={estilos.areaDrop}>
             <span style={{ fontSize: '2.5rem' }}>⚡</span>
             <h3 style={{ margin: '0.5rem 0', color: '#0f172a' }}>
-              {nomeFicheiro ? nomeFicheiro : 'Importar Nova Planilha (.xlsx)'}
+              {nomeFicheiro ? nomeFicheiro : 'Importar Planilha (.xlsx)'}
             </h3>
             <p style={{ color: '#64748b', fontSize: '0.85rem', margin: '0 0 1rem 0' }}>
-              Ao selecionar uma planilha, o sistema carregará e calculará os valores brutos e líquidos.
+              Carregue a planilha para incluir novos lançamentos e visualizar contêineres já pagos.
             </p>
             <input
               type="file"
@@ -336,13 +342,12 @@ export default function ImportacaoPage() {
           )}
         </section>
 
-        {/* CARDS DE RESUMO DO SISTEMA (A PRAZO VS À VISTA) */}
+        {/* RESUMO DOS KPIS */}
         {dadosAnalisados.length > 0 && (
           <>
             <section style={estilos.gridTotais}>
-              {/* PAINEL A PRAZO */}
               <div style={estilos.cardKpiPrazo}>
-                <span style={estilos.tituloKpiPrazo}>📅 A PRAZO (Quinta-Feira {totais.dataQuintaFeira})</span>
+                <span style={estilos.tituloKpiPrazo}>📅 A PRAZO ({totais.dataQuintaFeira})</span>
                 <p style={{ ...estilos.valorKpi, color: '#1d4ed8' }}>
                   {formatarMoeda(totais.liquidoPrazo)}
                 </p>
@@ -354,9 +359,8 @@ export default function ImportacaoPage() {
                 </span>
               </div>
 
-              {/* PAINEL À VISTA */}
               <div style={estilos.cardKpiVista}>
-                <span style={estilos.tituloKpiVista}>⚡ À VISTA / INTEGRAL (Hoje)</span>
+                <span style={estilos.tituloKpiVista}>⚡ À VISTA / INTEGRAL</span>
                 <p style={{ ...estilos.valorKpi, color: '#15803d' }}>
                   {formatarMoeda(totais.liquidoAvista)}
                 </p>
@@ -368,17 +372,26 @@ export default function ImportacaoPage() {
                 </span>
               </div>
 
-              {/* ALERTAS DUPLICIDADE */}
-              <div style={estilos.cardKpi}>
-                <span style={estilos.tituloKpi}>⚠️️ ALERTAS DE DUPLICIDADE</span>
-                <p style={{ ...estilos.valorKpi, color: totais.duplicadosCount > 0 ? '#b45309' : '#16a34a' }}>
-                  {totais.duplicadosCount} Repetições
+              <div
+                onClick={() => setAbaAtiva('JA_PAGOS')}
+                style={{
+                  ...estilos.cardKpi,
+                  backgroundColor: '#fef2f2',
+                  borderColor: '#fecaca',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ ...estilos.tituloKpi, color: '#dc2626' }}>⛔ CONTÊINERES JÁ PAGOS</span>
+                <p style={{ ...estilos.valorKpi, color: '#dc2626' }}>
+                  {totais.jaPagosCount} Já Pagos
                 </p>
-                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>Destacados na tabela</span>
+                <span style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 'bold' }}>
+                  Clique para ver os {totais.jaPagosCount} contêineres ➔
+                </span>
               </div>
             </section>
 
-            {/* SELEÇÃO DE ABAS */}
+            {/* BARRA DE ABAS */}
             <div style={estilos.containerAbas}>
               <button
                 onClick={() => setAbaAtiva('TODOS')}
@@ -406,11 +419,26 @@ export default function ImportacaoPage() {
                   color: abaAtiva === 'DUPLICADOS' ? '#ffffff' : '#b45309',
                 }}
               >
-                ⚠️ Duplicados ({totais.duplicadosCount})
+                ⚠️ Repetidos ({totais.duplicadosCount})
               </button>
+
+              {totais.jaPagosCount > 0 && (
+                <button
+                  onClick={() => setAbaAtiva('JA_PAGOS')}
+                  style={{
+                    ...estilos.botaoAba,
+                    backgroundColor: abaAtiva === 'JA_PAGOS' ? '#dc2626' : '#fef2f2',
+                    color: abaAtiva === 'JA_PAGOS' ? '#ffffff' : '#dc2626',
+                    border: '1px solid #fecaca',
+                    fontWeight: '800',
+                  }}
+                >
+                  ⛔ Ver os {totais.jaPagosCount} Já Pagos
+                </button>
+              )}
             </div>
 
-            {/* TABELA DE DADOS COM VALOR BRUTO E VALOR LÍQUIDO LADO A LADO */}
+            {/* TABELA DE REGISTOS */}
             <section style={{ marginTop: '1rem' }}>
               <div style={estilos.containerTabela}>
                 <table style={estilos.tabela}>
@@ -418,12 +446,11 @@ export default function ImportacaoPage() {
                     <tr>
                       <th style={estilos.th}>REF / Contêiner</th>
                       <th style={estilos.th}>Placa (Cavalo)</th>
+                      <th style={estilos.th}>Data OP</th>
                       <th style={estilos.th}>Origem → Destino</th>
                       <th style={estilos.th}>Tipo PGTO</th>
-                      <th style={estilos.th}>Valor Bruto</th>
-                      <th style={estilos.th}>RPA (2,7%)</th>
                       <th style={estilos.th}>Valor Líquido</th>
-                      <th style={estilos.th}>Alerta / Status</th>
+                      <th style={estilos.th}>Status / Apontamento</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -431,16 +458,21 @@ export default function ImportacaoPage() {
                       <tr
                         key={index}
                         style={{
-                          backgroundColor: item.isDuplicado ? '#fef3c7' : '#ffffff',
+                          backgroundColor: item.jaPagoNoBanco ? '#fef2f2' : item.isDuplicado ? '#fef3c7' : '#ffffff',
                           borderBottom: '1px solid #e2e8f0',
                         }}
                       >
                         <td style={estilos.td}>
                           <strong>{item.ref}</strong>
                           <br />
-                          <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{item.conteiner}</span>
+                          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', color: item.jaPagoNoBanco ? '#dc2626' : '#0f172a' }}>
+                            📦 {item.conteiner}
+                          </span>
                         </td>
                         <td style={estilos.td}><strong>{item.cavalo}</strong></td>
+                        <td style={{ ...estilos.td, fontWeight: '700', color: '#0f172a' }}>
+                          📅 {item.dataOpFormatada}
+                        </td>
                         <td style={estilos.td}>{item.terminalOrigem} → {item.terminalDestino}</td>
                         <td style={estilos.td}>
                           <span style={{ padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 'bold', backgroundColor: item.categoriaPgto === 'PRAZO' ? '#dbeafe' : '#dcfce7', color: item.categoriaPgto === 'PRAZO' ? '#1e40af' : '#15803d' }}>
@@ -448,29 +480,22 @@ export default function ImportacaoPage() {
                           </span>
                         </td>
 
-                        {/* COLUNA: VALOR BRUTO ORIGINAL */}
-                        <td style={{ ...estilos.td, fontWeight: '700', color: '#0f172a' }}>
-                          {formatarMoeda(item.valorBruto)}
-                        </td>
-
-                        {/* COLUNA: DESCONTO RPA (2,7%) */}
-                        <td style={{ ...estilos.td, color: '#dc2626' }}>
-                          - {formatarMoeda(item.valorRpa)}
-                        </td>
-
-                        {/* COLUNA: VALOR LÍQUIDO FINAL */}
-                        <td style={{ ...estilos.td, fontWeight: '800', color: item.categoriaPgto === 'PRAZO' ? '#1d4ed8' : '#15803d' }}>
+                        <td style={{ ...estilos.td, fontWeight: '800', color: item.jaPagoNoBanco ? '#dc2626' : '#16a34a' }}>
                           {formatarMoeda(item.valorLiquidoFinal)}
                         </td>
 
                         <td style={estilos.td}>
-                          {item.isDuplicado ? (
+                          {item.jaPagoNoBanco ? (
+                            <span style={{ color: '#dc2626', fontWeight: '800', fontSize: '0.8rem' }}>
+                              ⛔ JÁ PAGO NO SISTEMA (Contêiner {item.conteiner})
+                            </span>
+                          ) : item.isDuplicado ? (
                             <span style={{ color: '#b45309', fontWeight: 'bold', fontSize: '0.8rem' }}>
-                              {item.mensagemAlerta}
+                              ⚠️ Repetido
                             </span>
                           ) : (
                             <span style={{ color: '#16a34a', fontWeight: 'bold', fontSize: '0.8rem' }}>
-                              ✅ Registo Pendente
+                              ✅ Novo / Pendente
                             </span>
                           )}
                         </td>
@@ -491,7 +516,7 @@ const estilos: { [key: string]: React.CSSProperties } = {
   cardUpload: { backgroundColor: '#ffffff', padding: '2rem', borderRadius: '12px', border: '1px solid #e2e8f0', marginBottom: '2rem' },
   areaDrop: { border: '2px dashed #cbd5e1', padding: '2rem', borderRadius: '8px', textAlign: 'center', backgroundColor: '#f8fafc' },
   botaoEscolher: { backgroundColor: '#2563eb', color: '#fff', padding: '0.75rem 1.5rem', borderRadius: '6px', fontWeight: '600', cursor: 'pointer', display: 'inline-block', marginTop: '0.5rem' },
-  status: { marginTop: '1rem', padding: '0.85rem', borderRadius: '8px', fontSize: '0.9rem', textAlign: 'center', border: '1px solid' },
+  status: { marginTop: '1rem', padding: '0.85rem', borderRadius: '8px', fontSize: '0.9rem', textAlign: 'center', border: '1px solid', fontWeight: '700' },
   gridTotais: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' },
   cardKpi: { backgroundColor: '#ffffff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0' },
   cardKpiPrazo: { backgroundColor: '#eff6ff', padding: '1.5rem', borderRadius: '12px', border: '1px solid #bfdbfe' },
@@ -500,7 +525,7 @@ const estilos: { [key: string]: React.CSSProperties } = {
   tituloKpiPrazo: { fontSize: '0.8rem', fontWeight: '800', color: '#1e40af' },
   tituloKpiVista: { fontSize: '0.8rem', fontWeight: '800', color: '#166534' },
   valorKpi: { margin: '0.5rem 0', fontSize: '1.6rem', fontWeight: '700' },
-  containerAbas: { display: 'flex', gap: '0.5rem', marginBottom: '1rem' },
+  containerAbas: { display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' },
   botaoAba: { padding: '0.65rem 1.2rem', backgroundColor: '#e2e8f0', color: '#475569', border: 'none', borderRadius: '8px', fontWeight: '600', cursor: 'pointer' },
   botaoAbaAtivo: { backgroundColor: '#2563eb', color: '#ffffff' },
   botaoAbaAlertaAtivo: { backgroundColor: '#d97706', color: '#ffffff' },
