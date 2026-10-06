@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (PERSISTÊNCIA E CÁLCULO EM TEMPO REAL)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (CÁLCULO DE RPA 2,7% SEM DESC. 4%)
  * Localização no VS Code: empresa/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Carrega automaticamente minutas pendentes do banco de dados ao abrir
- *            a tela, e permite importar novas planilhas acumulando os registros[cite: 17, 18].
+ * Descrição: Aplica exclusivamente o desconto de RPA (2,7%) sobre o Frete Bruto
+ *            e soma o Pedágio integralmente para obter o Valor Líquido Final.
  * ============================================================================
  */
 
@@ -27,9 +27,10 @@ interface MinutaModel {
   servico?: string;
   tipoPgto?: string;
   dataEntrega?: string;
+  valorFrete?: number;
+  valorPedagio?: number;
   valorBruto?: number;
   valorRpa?: number;
-  descontoAVista?: number;
   valorLiquidoFinal?: number;
   isDuplicado?: boolean;
   jaPagoNoBanco?: boolean;
@@ -51,15 +52,30 @@ export default function ImportacaoPage() {
   // Cartões de resumo financeiro
   const [resumo, setResumo] = useState({
     totalLiquido: 0,
+    totalFrete: 0,
+    totalPedagio: 0,
     totalBruto: 0,
     totalRpa: 0,
-    totalDescontoVista: 0,
     qtdPendentes: 0,
     qtdPagas: 0,
-    qtdAVista: 0,
-    qtdAPrazo: 0,
-    valorAVistaLiquido: 0,
-    valorAPrazoLiquido: 0,
+
+    // Detalhamento dos Fretes À Vista
+    aVista: {
+      qtd: 0,
+      freteBruto: 0,
+      pedagio: 0,
+      rpa: 0,
+      liquidoFinal: 0,
+    },
+
+    // Detalhamento dos Fretes A Prazo
+    aPrazo: {
+      qtd: 0,
+      freteBruto: 0,
+      pedagio: 0,
+      rpa: 0,
+      liquidoFinal: 0,
+    },
   });
 
   // Feedback visual
@@ -70,30 +86,59 @@ export default function ImportacaoPage() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
   /**
-   * Função auxiliar para calcular o somatório dos cartões financeiros[cite: 18]
+   * Helper para formatar moeda com exatamente 2 casas decimais (ex: R$ 67.960,62)
+   */
+  const formatarMoeda = (valor: number) => {
+    return Number(valor || 0).toLocaleString('pt-BR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  /**
+   * Recalcula os cartões superiores aplicando apenas o desconto de RPA (2,7%)
    */
   const calcularResumoFinanceiro = useCallback((minutas: MinutaModel[]) => {
-    let bruto = 0;
-    let rpa = 0;
-    let descVista = 0;
-    let liquido = 0;
+    let freteTotal = 0;
+    let pedagioTotal = 0;
+    let rpaTotal = 0;
+    let liquidoTotal = 0;
     let pendentes = 0;
     let pagas = 0;
-    let aVistaQtd = 0;
-    let aPrazoQtd = 0;
-    let aVistaLiq = 0;
-    let aPrazoLiq = 0;
+
+    const aVista = {
+      qtd: 0,
+      freteBruto: 0,
+      pedagio: 0,
+      rpa: 0,
+      liquidoFinal: 0,
+    };
+
+    const aPrazo = {
+      qtd: 0,
+      freteBruto: 0,
+      pedagio: 0,
+      rpa: 0,
+      liquidoFinal: 0,
+    };
 
     minutas.forEach((m) => {
-      const vBruto = Number(m.valorBruto || m.frete || 0);
-      const vRpa = Number(m.valorRpa || (vBruto * 0.027));
-      const vDescVista = Number(m.descontoAVista || 0);
-      const vLiq = Number(m.valorLiquidoFinal || (vBruto - vRpa - vDescVista));
+      const vFrete = Number(m.valorFrete ?? m.frete ?? m['FRETE'] ?? m.valorBruto ?? 0);
+      const vPedagio = Number(m.valorPedagio ?? m.pedagio ?? m['PEDAGIO'] ?? m['PEDÁGIO'] ?? 0);
+      
+      const tipoStr = String(m.tipoPgto || m['TIPO DE PGTO'] || '').toUpperCase();
+      const isVista = tipoStr.includes('VISTA') || tipoStr.includes('AVISTA');
 
-      bruto += vBruto;
-      rpa += vRpa;
-      descVista += vDescVista;
-      liquido += vLiq;
+      // 1. Desconto do RPA de 2,7% sobre o Frete Bruto
+      const vRpa = Number(m.valorRpa ?? (vFrete * 0.027));
+      
+      // 2. Líquido Final = (Frete Bruto - RPA 2,7%) + Pedágio
+      const vLiq = Number(m.valorLiquidoFinal ?? ((vFrete - vRpa) + vPedagio));
+
+      freteTotal += vFrete;
+      pedagioTotal += vPedagio;
+      rpaTotal += vRpa;
+      liquidoTotal += vLiq;
 
       if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
         pagas++;
@@ -101,31 +146,36 @@ export default function ImportacaoPage() {
         pendentes++;
       }
 
-      const tipoStr = String(m.tipoPgto || '').toUpperCase();
-      if (tipoStr.includes('VISTA') || tipoStr.includes('AVISTA')) {
-        aVistaQtd++;
-        aVistaLiq += vLiq;
+      // Separação dos valores entre À Vista e A Prazo
+      if (isVista) {
+        aVista.qtd++;
+        aVista.freteBruto += vFrete;
+        aVista.pedagio += vPedagio;
+        aVista.rpa += vRpa;
+        aVista.liquidoFinal += vLiq;
       } else {
-        aPrazoQtd++;
-        aPrazoLiq += vLiq;
+        aPrazo.qtd++;
+        aPrazo.freteBruto += vFrete;
+        aPrazo.pedagio += vPedagio;
+        aPrazo.rpa += vRpa;
+        aPrazo.liquidoFinal += vLiq;
       }
     });
 
     setResumo({
-      totalLiquido: liquido,
-      totalBruto: bruto,
-      totalRpa: rpa,
-      totalDescontoVista: descVista,
+      totalLiquido: liquidoTotal,
+      totalFrete: freteTotal,
+      totalPedagio: pedagioTotal,
+      totalBruto: freteTotal + pedagioTotal,
+      totalRpa: rpaTotal,
       qtdPendentes: pendentes,
       qtdPagas: pagas,
-      qtdAVista: aVistaQtd,
-      qtdAPrazo: aPrazoQtd,
-      valorAVistaLiquido: aVistaLiq,
-      valorAPrazoLiquido: aPrazoLiq,
+      aVista,
+      aPrazo,
     });
   }, []);
 
-  // 1. Autenticação e busca automática das minutas pendentes gravadas no banco[cite: 17, 18]
+  // 1. Autenticação e busca automática das minutas salvas no banco
   useEffect(() => {
     const token = localStorage.getItem('token');
     const usuarioSalvo = localStorage.getItem('usuario');
@@ -142,13 +192,10 @@ export default function ImportacaoPage() {
       return;
     }
 
-    // Busca as minutas salvas no MongoDB Atlas ao carregar a página
     const buscarMinutasBanco = async () => {
       try {
         const resposta = await fetch(`${apiUrl}/importacao`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { Authorization: `Bearer ${token}` },
         });
         const resultado = await resposta.json();
 
@@ -157,7 +204,7 @@ export default function ImportacaoPage() {
           calcularResumoFinanceiro(resultado.dados);
         }
       } catch (erro) {
-        console.warn('Não foi possível carregar minutas pendentes iniciais:', erro);
+        console.warn('Não foi possível carregar minutas iniciais:', erro);
       }
     };
 
@@ -165,7 +212,7 @@ export default function ImportacaoPage() {
   }, [router, apiUrl, calcularResumoFinanceiro]);
 
   /**
-   * LEITURA DA PLANILHA E PROCESSAMENTO COMPLETO
+   * LEITURA DA PLANILHA EXCEL
    */
   const handleImportacaoDireta = (e: React.ChangeEvent<HTMLInputElement>) => {
     const arquivo = e.target.files?.[0];
@@ -173,7 +220,7 @@ export default function ImportacaoPage() {
 
     setNomeArquivo(arquivo.name);
     setCarregando(true);
-    setMensagemStatus('⏳ A ler planilha e a processar com o servidor...');
+    setMensagemStatus('⏳ A ler planilha e a calcular valores com RPA de 2,7%...');
 
     const leitor = new FileReader();
 
@@ -184,16 +231,14 @@ export default function ImportacaoPage() {
         const primeiraAba = livroExcel.SheetNames[0];
         const folha = livroExcel.Sheets[primeiraAba];
 
-        // Converte as linhas do Excel para JSON[cite: 18]
         const lancamentosBrutos: any[] = XLSX.utils.sheet_to_json(folha);
 
         if (lancamentosBrutos.length === 0) {
-          setMensagemStatus('⚠️ A planilha selecionada está vazia ou é inválida.');
+          setMensagemStatus('⚠️ A planilha selecionada está vazia.');
           setCarregando(false);
           return;
         }
 
-        // 1. ANÁLISE DOS DADOS NO BACKEND EXPRESS[cite: 18]
         const resAnalise = await fetch(`${apiUrl}/importacao/analisar`, {
           method: 'POST',
           headers: {
@@ -204,21 +249,12 @@ export default function ImportacaoPage() {
         });
 
         const textoAnalise = await resAnalise.text();
-
         if (textoAnalise.trim().startsWith('<')) {
-          throw new Error('O servidor backend devolveu uma resposta inválida (HTML). Verifique se o servidor está a rodar.');
+          throw new Error('Servidor respondeu em HTML. Verifique se o backend está ligado.');
         }
 
         const resultadoAnalise = JSON.parse(textoAnalise);
-
-        if (!resAnalise.ok || !resultadoAnalise.sucesso) {
-          throw new Error(resultadoAnalise.mensagem || 'Erro ao analisar a planilha.');
-        }
-
         const minutasAnalisadas: MinutaModel[] = resultadoAnalise.lancamentos || [];
-
-        // 2. GRAVAÇÃO NO MONGODB ATLAS ATRAVÉS DO BACKEND[cite: 17, 18]
-        setMensagemStatus('⏳ A gravar lançamentos no banco de dados MongoDB Atlas...');
 
         const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
           method: 'POST',
@@ -230,20 +266,14 @@ export default function ImportacaoPage() {
         });
 
         const textoConfirmar = await resConfirmar.text();
-
-        if (textoConfirmar.trim().startsWith('<')) {
-          throw new Error('Erro ao gravar no banco. Verifique as rotas do backend.');
-        }
-
         const resultadoConfirmar = JSON.parse(textoConfirmar);
 
         if (resConfirmar.ok && resultadoConfirmar.sucesso) {
-          // Atualiza com a lista de minutas acumuladas[cite: 17, 18]
           const minutasExibicao = resultadoConfirmar.dadosAtualizados || minutasAnalisadas;
           setListaMinutas(minutasExibicao);
           calcularResumoFinanceiro(minutasExibicao);
 
-          setMensagemStatus(`🎉 ${resultadoConfirmar.criados || minutasAnalisadas.length} viagem(ns) gravada(s) com sucesso no banco de dados! Total pendente: ${minutasExibicao.length}.`);
+          setMensagemStatus(`🎉 ${resultadoConfirmar.criados || minutasAnalisadas.length} viagem(ns) gravadas no banco com sucesso!`);
         } else {
           throw new Error(resultadoConfirmar.mensagem || 'Erro ao salvar lançamentos.');
         }
@@ -260,11 +290,8 @@ export default function ImportacaoPage() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc', display: 'flex', color: '#0f172a' }}>
-      
-      {/* 1. BARRA LATERAL (SIDEBAR DE NAVEGAÇÃO) */}
       <Sidebar usuario={usuarioLogado} />
 
-      {/* 2. CONTEÚDO PRINCIPAL DA PÁGINA */}
       <main style={{ marginLeft: '250px', flex: 1, padding: '2rem 3rem' }}>
         
         <header style={{ marginBottom: '2rem' }}>
@@ -272,7 +299,7 @@ export default function ImportacaoPage() {
             Importação e Fechamento de Minutas
           </h1>
           <p style={{ color: '#64748b', margin: '0.25rem 0 0 0', fontSize: '0.9rem', fontWeight: '500' }}>
-            Acompanhamento em tempo real com validação e apontamento de contêineres já pagos
+            Desconto exclusivo de RPA (2,7%) sobre o Frete + Pedágio integral
           </p>
         </header>
 
@@ -283,46 +310,22 @@ export default function ImportacaoPage() {
               <p style={{ margin: 0, fontWeight: '800', color: '#1e293b', fontSize: '1rem' }}>
                 📁 {nomeArquivo ? nomeArquivo : 'Selecione a planilha (.xlsx)'}
               </p>
-              <p style={{ margin: '0.2rem 0 0 0', color: '#64748b', fontSize: '0.85rem' }}>
-                Carregue a planilha para salvar lançamentos e recalcular os valores em tempo real.
-              </p>
             </div>
 
-            <input
-              type="file"
-              id="fileInput"
-              accept=".xlsx, .xls"
-              onChange={handleImportacaoDireta}
-              style={{ display: 'none' }}
-            />
-
+            <input type="file" id="fileInput" accept=".xlsx, .xls" onChange={handleImportacaoDireta} style={{ display: 'none' }} />
             <label htmlFor="fileInput" style={{ backgroundColor: '#2563eb', color: '#ffffff', padding: '0.65rem 1.25rem', borderRadius: '8px', fontWeight: '800', fontSize: '0.875rem', cursor: 'pointer' }}>
               {carregando ? '⏳ A processar...' : '📂 Carregar Planilha Excel'}
             </label>
           </div>
         </section>
 
-        {/* ALERTA DE STATUS DE GRAVAÇÃO */}
         {mensagemStatus && (
-          <div style={{
-            marginBottom: '1.5rem',
-            padding: '0.85rem 1.25rem',
-            borderRadius: '8px',
-            fontSize: '0.9rem',
-            fontWeight: '700',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem',
-            backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : mensagemStatus.includes('⚠️') ? '#fffbeb' : '#f0fdf4',
-            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('⚠️') ? '#b45309' : '#166534',
-            border: '1px solid',
-            borderColor: mensagemStatus.includes('❌') ? '#fecaca' : mensagemStatus.includes('⚠️') ? '#fde68a' : '#bbf7d0',
-          }}>
+          <div style={{ marginBottom: '1.5rem', padding: '0.85rem 1.25rem', borderRadius: '8px', fontSize: '0.9rem', fontWeight: '700', backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : '#f0fdf4', color: mensagemStatus.includes('❌') ? '#991b1b' : '#166534', border: '1px solid', borderColor: mensagemStatus.includes('❌') ? '#fecaca' : '#bbf7d0' }}>
             {mensagemStatus}
           </div>
         )}
 
-        {/* CARTÕES DE RESUMO FINANCEIRO */}
+        {/* CARTÕES DE RESUMO FINANCEIRO GERAL */}
         {listaMinutas.length > 0 && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
@@ -331,10 +334,10 @@ export default function ImportacaoPage() {
               <div style={estilos.cardPadrao}>
                 <span style={estilos.tituloCard}>TOTAL LÍQUIDO A RECEBER</span>
                 <strong style={{ fontSize: '1.8rem', color: '#16a34a', fontWeight: '900', margin: '0.4rem 0' }}>
-                  R$ {resumo.totalLiquido.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  R$ {formatarMoeda(resumo.totalLiquido)}
                 </strong>
-                <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>
-                  Bruto: R$ {resumo.totalBruto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} | RPA: -R$ {resumo.totalRpa.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: '700' }}>
+                  Frete: R$ {formatarMoeda(resumo.totalFrete)} | Pedágio: R$ {formatarMoeda(resumo.totalPedagio)} | RPA: -R$ {formatarMoeda(resumo.totalRpa)}
                 </span>
               </div>
 
@@ -344,9 +347,7 @@ export default function ImportacaoPage() {
                 <strong style={{ fontSize: '1.8rem', color: '#d97706', fontWeight: '900', margin: '0.4rem 0' }}>
                   {resumo.qtdPendentes}
                 </strong>
-                <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>
-                  Aguardando pagamento
-                </span>
+                <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>Aguardando pagamento</span>
               </div>
 
               {/* CARTÃO 3: FRETES PAGOS */}
@@ -355,42 +356,64 @@ export default function ImportacaoPage() {
                 <strong style={{ fontSize: '1.8rem', color: '#2563eb', fontWeight: '900', margin: '0.4rem 0' }}>
                   {resumo.qtdPagas}
                 </strong>
-                <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>
-                  Pagamentos efetuados
-                </span>
+                <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>Pagamentos efetuados</span>
               </div>
 
             </div>
 
-            {/* PAINEL SECUNDÁRIO: SEPARAÇÃO À VISTA vs A PRAZO */}
+            {/* PAINEL SECUNDÁRIO: CARTÕES DETALHADOS (À VISTA vs A PRAZO) */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
+              
+              {/* CARTÃO DETALHADO: FRETES À VISTA */}
               <div style={{ backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '1.25rem' }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#92400e', textTransform: 'uppercase' }}>
-                  ⚡ FRETES À VISTA (4.0% DESC.)
-                </span>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
-                  <strong style={{ fontSize: '1.3rem', color: '#b45309', fontWeight: '800' }}>
-                    R$ {resumo.valorAVistaLiquido.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </strong>
-                  <span style={{ fontSize: '0.85rem', fontWeight: '800', color: '#92400e', backgroundColor: '#fef3c7', padding: '0.2rem 0.6rem', borderRadius: '6px' }}>
-                    {resumo.qtdAVista} minuta(s)
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#92400e', textTransform: 'uppercase' }}>
+                    ⚡ FRETES À VISTA
                   </span>
+                  <span style={{ fontSize: '0.85rem', fontWeight: '800', color: '#92400e', backgroundColor: '#fef3c7', padding: '0.2rem 0.6rem', borderRadius: '6px' }}>
+                    {resumo.aVista.qtd} minuta(s)
+                  </span>
+                </div>
+
+                <div style={{ margin: '0.75rem 0', fontSize: '0.825rem', color: '#78350f', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <div>• Frete Bruto: <strong>R$ {formatarMoeda(resumo.aVista.freteBruto)}</strong></div>
+                  <div>• Pedágio (+): <strong>R$ {formatarMoeda(resumo.aVista.pedagio)}</strong></div>
+                  <div>• RPA (-2,7%): <strong style={{ color: '#dc2626' }}>- R$ {formatarMoeda(resumo.aVista.rpa)}</strong></div>
+                </div>
+
+                <div style={{ borderTop: '1px solid #fde68a', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#92400e' }}>LÍQUIDO FINAL À VISTA:</span>
+                  <strong style={{ fontSize: '1.5rem', color: '#b45309', fontWeight: '900', display: 'block' }}>
+                    R$ {formatarMoeda(resumo.aVista.liquidoFinal)}
+                  </strong>
                 </div>
               </div>
 
+              {/* CARTÃO DETALHADO: FRETES A PRAZO */}
               <div style={{ backgroundColor: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '12px', padding: '1.25rem' }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#334155', textTransform: 'uppercase' }}>
-                  📅 FRETES A PRAZO (SEM DESC. EXTRA)
-                </span>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
-                  <strong style={{ fontSize: '1.3rem', color: '#1e293b', fontWeight: '800' }}>
-                    R$ {resumo.valorAPrazoLiquido.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </strong>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#334155', textTransform: 'uppercase' }}>
+                    📅 FRETES A PRAZO
+                  </span>
                   <span style={{ fontSize: '0.85rem', fontWeight: '800', color: '#475569', backgroundColor: '#e2e8f0', padding: '0.2rem 0.6rem', borderRadius: '6px' }}>
-                    {resumo.qtdAPrazo} minuta(s)
+                    {resumo.aPrazo.qtd} minuta(s)
                   </span>
                 </div>
+
+                <div style={{ margin: '0.75rem 0', fontSize: '0.825rem', color: '#334155', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <div>• Frete Bruto: <strong>R$ {formatarMoeda(resumo.aPrazo.freteBruto)}</strong></div>
+                  <div>• Pedágio (+): <strong>R$ {formatarMoeda(resumo.aPrazo.pedagio)}</strong></div>
+                  <div>• RPA (-2,7%): <strong style={{ color: '#dc2626' }}>- R$ {formatarMoeda(resumo.aPrazo.rpa)}</strong></div>
+                </div>
+
+                <div style={{ borderTop: '1px solid #cbd5e1', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#334155' }}>LÍQUIDO FINAL A PRAZO:</span>
+                  <strong style={{ fontSize: '1.5rem', color: '#0f172a', fontWeight: '900', display: 'block' }}>
+                    R$ {formatarMoeda(resumo.aPrazo.liquidoFinal)}
+                  </strong>
+                </div>
               </div>
+
             </div>
 
             {/* TABELA DETALHADA DAS VIAGENS */}
@@ -407,47 +430,57 @@ export default function ImportacaoPage() {
                     <th style={estilos.th}>Contêiner</th>
                     <th style={estilos.th}>Tipo Pgto</th>
                     <th style={estilos.th}>Frete Bruto</th>
-                    <th style={estilos.th}>RPA (2.7%)</th>
-                    <th style={estilos.th}>Desc. À Vista</th>
+                    <th style={estilos.th}>Pedágio</th>
+                    <th style={estilos.th}>RPA (2,7% Frete)</th>
                     <th style={estilos.th}>Líquido Final</th>
                     <th style={estilos.th}>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {listaMinutas.map((item, idx) => (
-                    <tr
-                      key={idx}
-                      style={{
-                        borderBottom: '1px solid #e2e8f0',
-                        backgroundColor: item.jaPagoNoBanco ? '#fef2f2' : item.isDuplicado ? '#fffbeb' : '#ffffff',
-                      }}
-                    >
-                      <td style={estilos.td}>{item.ref || '-'}</td>
-                      <td style={{ ...estilos.td, fontWeight: '800' }}>{item.cavalo || item.CAVALO || '-'}</td>
-                      <td style={{ ...estilos.td, fontWeight: '800', color: '#2563eb' }}>{item.conteiner || item.CONTEINER || '-'}</td>
-                      <td style={estilos.td}>
-                        <span style={{
-                          padding: '0.2rem 0.5rem',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          fontWeight: '800',
-                          backgroundColor: String(item.tipoPgto || item['TIPO DE PGTO'] || '').toUpperCase().includes('VISTA') ? '#fef3c7' : '#e2e8f0',
-                          color: String(item.tipoPgto || item['TIPO DE PGTO'] || '').toUpperCase().includes('VISTA') ? '#92400e' : '#334155',
-                        }}>
-                          {item.tipoPgto || item['TIPO DE PGTO'] || 'A PRAZO'}
-                        </span>
-                      </td>
-                      <td style={estilos.td}>R$ {Number(item.valorBruto || item.frete || 0).toFixed(2)}</td>
-                      <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {Number(item.valorRpa || 0).toFixed(2)}</td>
-                      <td style={{ ...estilos.td, color: '#d97706' }}>- R$ {Number(item.descontoAVista || 0).toFixed(2)}</td>
-                      <td style={{ ...estilos.td, fontWeight: '900', color: '#166534', fontSize: '0.9rem' }}>
-                        R$ {Number(item.valorLiquidoFinal || 0).toFixed(2)}
-                      </td>
-                      <td style={{ ...estilos.td, fontWeight: '700', color: item.jaPagoNoBanco ? '#b91c1c' : item.isDuplicado ? '#b45309' : '#15803d' }}>
-                        {item.mensagemAlerta || '✅ Pendente'}
-                      </td>
-                    </tr>
-                  ))}
+                  {listaMinutas.map((item, idx) => {
+                    const vFrete = Number(item.valorFrete ?? item.frete ?? item['FRETE'] ?? item.valorBruto ?? 0);
+                    const vPedagio = Number(item.valorPedagio ?? item.pedagio ?? item['PEDAGIO'] ?? item['PEDÁGIO'] ?? 0);
+                    const tipoStr = String(item.tipoPgto || item['TIPO DE PGTO'] || '').toUpperCase();
+                    const isVista = tipoStr.includes('VISTA') || tipoStr.includes('AVISTA');
+
+                    const vRpa = Number(item.valorRpa ?? (vFrete * 0.027));
+                    const vLiq = Number(item.valorLiquidoFinal ?? ((vFrete - vRpa) + vPedagio));
+
+                    return (
+                      <tr
+                        key={idx}
+                        style={{
+                          borderBottom: '1px solid #e2e8f0',
+                          backgroundColor: item.jaPagoNoBanco ? '#fef2f2' : item.isDuplicado ? '#fffbeb' : '#ffffff',
+                        }}
+                      >
+                        <td style={estilos.td}>{item.ref || '-'}</td>
+                        <td style={{ ...estilos.td, fontWeight: '800' }}>{item.cavalo || item.CAVALO || '-'}</td>
+                        <td style={{ ...estilos.td, fontWeight: '800', color: '#2563eb' }}>{item.conteiner || item.CONTEINER || '-'}</td>
+                        <td style={estilos.td}>
+                          <span style={{
+                            padding: '0.2rem 0.5rem',
+                            borderRadius: '4px',
+                            fontSize: '0.75rem',
+                            fontWeight: '800',
+                            backgroundColor: isVista ? '#fef3c7' : '#e2e8f0',
+                            color: isVista ? '#92400e' : '#334155',
+                          }}>
+                            {item.tipoPgto || item['TIPO DE PGTO'] || 'A PRAZO'}
+                          </span>
+                        </td>
+                        <td style={estilos.td}>R$ {vFrete.toFixed(2)}</td>
+                        <td style={{ ...estilos.td, color: '#0284c7', fontWeight: '700' }}>+ R$ {vPedagio.toFixed(2)}</td>
+                        <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {vRpa.toFixed(2)}</td>
+                        <td style={{ ...estilos.td, fontWeight: '900', color: '#166534', fontSize: '0.9rem' }}>
+                          R$ {vLiq.toFixed(2)}
+                        </td>
+                        <td style={{ ...estilos.td, fontWeight: '700', color: item.jaPagoNoBanco ? '#b91c1c' : item.isDuplicado ? '#b45309' : '#15803d' }}>
+                          {item.mensagemAlerta || '✅ Pendente'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </section>
