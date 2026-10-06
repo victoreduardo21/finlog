@@ -2,15 +2,15 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (CONEXÃO HÍBRIDA LOCAL / PRODUÇÃO)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (PERSISTÊNCIA E CÁLCULO EM TEMPO REAL)
  * Localização no VS Code: empresa/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Processa planilhas Excel (.xlsx), comunica com o backend configurado
- *            na variável NEXT_PUBLIC_API_URL e calcula o fechamento financeiro.
+ * Descrição: Carrega automaticamente minutas pendentes do banco de dados ao abrir
+ *            a tela, e permite importar novas planilhas acumulando os registros[cite: 17, 18].
  * ============================================================================
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 
@@ -34,6 +34,7 @@ interface MinutaModel {
   isDuplicado?: boolean;
   jaPagoNoBanco?: boolean;
   mensagemAlerta?: string;
+  statusPagamento?: string;
   [key: string]: any;
 }
 
@@ -65,10 +66,66 @@ export default function ImportacaoPage() {
   const [carregando, setCarregando] = useState<boolean>(false);
   const [mensagemStatus, setMensagemStatus] = useState<string | null>(null);
 
-  // OBTÉM A URL DO BACKEND PELA VARIÁVEL DE AMBIENTE OU LOCALHOST
+  // URL DO BACKEND OBTIDA DA VARIÁVEL DE AMBIENTE OU LOCALHOST
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  // 1. Carrega dados da sessão local ao entrar na página
+  /**
+   * Função auxiliar para calcular o somatório dos cartões financeiros[cite: 18]
+   */
+  const calcularResumoFinanceiro = useCallback((minutas: MinutaModel[]) => {
+    let bruto = 0;
+    let rpa = 0;
+    let descVista = 0;
+    let liquido = 0;
+    let pendentes = 0;
+    let pagas = 0;
+    let aVistaQtd = 0;
+    let aPrazoQtd = 0;
+    let aVistaLiq = 0;
+    let aPrazoLiq = 0;
+
+    minutas.forEach((m) => {
+      const vBruto = Number(m.valorBruto || m.frete || 0);
+      const vRpa = Number(m.valorRpa || (vBruto * 0.027));
+      const vDescVista = Number(m.descontoAVista || 0);
+      const vLiq = Number(m.valorLiquidoFinal || (vBruto - vRpa - vDescVista));
+
+      bruto += vBruto;
+      rpa += vRpa;
+      descVista += vDescVista;
+      liquido += vLiq;
+
+      if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
+        pagas++;
+      } else {
+        pendentes++;
+      }
+
+      const tipoStr = String(m.tipoPgto || '').toUpperCase();
+      if (tipoStr.includes('VISTA') || tipoStr.includes('AVISTA')) {
+        aVistaQtd++;
+        aVistaLiq += vLiq;
+      } else {
+        aPrazoQtd++;
+        aPrazoLiq += vLiq;
+      }
+    });
+
+    setResumo({
+      totalLiquido: liquido,
+      totalBruto: bruto,
+      totalRpa: rpa,
+      totalDescontoVista: descVista,
+      qtdPendentes: pendentes,
+      qtdPagas: pagas,
+      qtdAVista: aVistaQtd,
+      qtdAPrazo: aPrazoQtd,
+      valorAVistaLiquido: aVistaLiq,
+      valorAPrazoLiquido: aPrazoLiq,
+    });
+  }, []);
+
+  // 1. Autenticação e busca automática das minutas pendentes gravadas no banco[cite: 17, 18]
   useEffect(() => {
     const token = localStorage.getItem('token');
     const usuarioSalvo = localStorage.getItem('usuario');
@@ -82,11 +139,33 @@ export default function ImportacaoPage() {
       setUsuarioLogado(JSON.parse(usuarioSalvo));
     } catch (e) {
       router.push('/');
+      return;
     }
-  }, [router]);
+
+    // Busca as minutas salvas no MongoDB Atlas ao carregar a página
+    const buscarMinutasBanco = async () => {
+      try {
+        const resposta = await fetch(`${apiUrl}/importacao`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const resultado = await resposta.json();
+
+        if (resposta.ok && resultado.sucesso && Array.isArray(resultado.dados)) {
+          setListaMinutas(resultado.dados);
+          calcularResumoFinanceiro(resultado.dados);
+        }
+      } catch (erro) {
+        console.warn('Não foi possível carregar minutas pendentes iniciais:', erro);
+      }
+    };
+
+    buscarMinutasBanco();
+  }, [router, apiUrl, calcularResumoFinanceiro]);
 
   /**
-   * LEITURA DA PLANILHA E ENVIO PARA O BACKEND
+   * LEITURA DA PLANILHA E PROCESSAMENTO COMPLETO
    */
   const handleImportacaoDireta = (e: React.ChangeEvent<HTMLInputElement>) => {
     const arquivo = e.target.files?.[0];
@@ -94,7 +173,7 @@ export default function ImportacaoPage() {
 
     setNomeArquivo(arquivo.name);
     setCarregando(true);
-    setMensagemStatus('⏳ A ler planilha e a ligar ao servidor...');
+    setMensagemStatus('⏳ A ler planilha e a processar com o servidor...');
 
     const leitor = new FileReader();
 
@@ -105,7 +184,7 @@ export default function ImportacaoPage() {
         const primeiraAba = livroExcel.SheetNames[0];
         const folha = livroExcel.Sheets[primeiraAba];
 
-        // Converte as linhas do Excel para JSON
+        // Converte as linhas do Excel para JSON[cite: 18]
         const lancamentosBrutos: any[] = XLSX.utils.sheet_to_json(folha);
 
         if (lancamentosBrutos.length === 0) {
@@ -114,140 +193,63 @@ export default function ImportacaoPage() {
           return;
         }
 
-        let minutasAnalisadas: MinutaModel[] = [];
-        let salvouNoBanco = false;
-
-        // TENTATIVA DE ENVIO PARA O BACKEND EXPRESS
-        try {
-          const resAnalise = await fetch(`${apiUrl}/importacao/analisar`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-            },
-            body: JSON.stringify({ lancamentos: lancamentosBrutos }),
-          });
-
-          const textoAnalise = await resAnalise.text();
-
-          if (!textoAnalise.trim().startsWith('<')) {
-            const resultadoAnalise = JSON.parse(textoAnalise);
-
-            if (resAnalise.ok && resultadoAnalise.sucesso) {
-              minutasAnalisadas = resultadoAnalise.lancamentos || [];
-
-              // Confirmação e gravação no MongoDB Atlas[cite: 7]
-              const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-                },
-                body: JSON.stringify({ lancamentos: minutasAnalisadas }),
-              });
-
-              const textoConfirmar = await resConfirmar.text();
-
-              if (!textoConfirmar.trim().startsWith('<')) {
-                const resultadoConfirmar = JSON.parse(textoConfirmar);
-                if (resConfirmar.ok && resultadoConfirmar.sucesso) {
-                  salvouNoBanco = true;
-                }
-              }
-            }
-          }
-        } catch (erroBackend) {
-          console.warn('⚠️ Servidor backend offline. Calculando valores localmente.');
-        }
-
-        // CÁLCULO LOCAL SE O BACKEND ESTIVER OFFLINE
-        if (minutasAnalisadas.length === 0) {
-          minutasAnalisadas = lancamentosBrutos.map((item) => {
-            const vBruto = Number(item['Valor Bruto'] ?? item['valor a pagar'] ?? item.FRETE ?? item.frete ?? 0);
-            const tipoStr = String(item['TIPO DE PGTO'] || item.tipoPgto || '').toUpperCase();
-            const isVista = tipoStr.includes('VISTA') || tipoStr.includes('AVISTA');
-
-            const vRpa = vBruto * 0.027;
-            const vDescVista = isVista ? vBruto * 0.04 : 0;
-            const vLiq = vBruto - vRpa - vDescVista;
-
-            return {
-              ref: String(item.REF || item.ref || ''),
-              cavalo: String(item.CAVALO || item.cavalo || item.PLACA || item.placa || '').toUpperCase(),
-              conteiner: String(item.CONTEINER || item.conteiner || ''),
-              terminalOrigem: String(item['TERMINAL ORIGEM'] || item.terminalOrigem || ''),
-              terminalDestino: String(item['TERMINAL DESTINO'] || item.terminalDestino || ''),
-              tipoPgto: tipoStr,
-              valorBruto: vBruto,
-              valorRpa: vRpa,
-              descontoAVista: vDescVista,
-              valorLiquidoFinal: vLiq,
-              statusPagamento: 'PENDENTE',
-            };
-          });
-        }
-
-        // SOMATÓRIO PARA OS CARTÕES SUPERIORES
-        let bruto = 0;
-        let rpa = 0;
-        let descVista = 0;
-        let liquido = 0;
-        let pendentes = 0;
-        let pagas = 0;
-        let aVistaQtd = 0;
-        let aPrazoQtd = 0;
-        let aVistaLiq = 0;
-        let aPrazoLiq = 0;
-
-        minutasAnalisadas.forEach((m) => {
-          const vBruto = Number(m.valorBruto || 0);
-          const vRpa = Number(m.valorRpa || (vBruto * 0.027));
-          const vDescVista = Number(m.descontoAVista || 0);
-          const vLiq = Number(m.valorLiquidoFinal || (vBruto - vRpa - vDescVista));
-
-          bruto += vBruto;
-          rpa += vRpa;
-          descVista += vDescVista;
-          liquido += vLiq;
-
-          if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
-            pagas++;
-          } else {
-            pendentes++;
-          }
-
-          const tipoStr = String(m.tipoPgto || '').toUpperCase();
-          if (tipoStr.includes('VISTA') || tipoStr.includes('AVISTA')) {
-            aVistaQtd++;
-            aVistaLiq += vLiq;
-          } else {
-            aPrazoQtd++;
-            aPrazoLiq += vLiq;
-          }
+        // 1. ANÁLISE DOS DADOS NO BACKEND EXPRESS[cite: 18]
+        const resAnalise = await fetch(`${apiUrl}/importacao/analisar`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: JSON.stringify({ lancamentos: lancamentosBrutos }),
         });
 
-        setListaMinutas(minutasAnalisadas);
-        setResumo({
-          totalLiquido: liquido,
-          totalBruto: bruto,
-          totalRpa: rpa,
-          totalDescontoVista: descVista,
-          qtdPendentes: pendentes,
-          qtdPagas: pagas,
-          qtdAVista: aVistaQtd,
-          qtdAPrazo: aPrazoQtd,
-          valorAVistaLiquido: aVistaLiq,
-          valorAPrazoLiquido: aPrazoLiq,
+        const textoAnalise = await resAnalise.text();
+
+        if (textoAnalise.trim().startsWith('<')) {
+          throw new Error('O servidor backend devolveu uma resposta inválida (HTML). Verifique se o servidor está a rodar.');
+        }
+
+        const resultadoAnalise = JSON.parse(textoAnalise);
+
+        if (!resAnalise.ok || !resultadoAnalise.sucesso) {
+          throw new Error(resultadoAnalise.mensagem || 'Erro ao analisar a planilha.');
+        }
+
+        const minutasAnalisadas: MinutaModel[] = resultadoAnalise.lancamentos || [];
+
+        // 2. GRAVAÇÃO NO MONGODB ATLAS ATRAVÉS DO BACKEND[cite: 17, 18]
+        setMensagemStatus('⏳ A gravar lançamentos no banco de dados MongoDB Atlas...');
+
+        const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+          },
+          body: JSON.stringify({ lancamentos: minutasAnalisadas }),
         });
 
-        if (salvouNoBanco) {
-          setMensagemStatus(`✅ ${minutasAnalisadas.length} viagem(ns) analisada(s) e gravada(s) no banco de dados!`);
+        const textoConfirmar = await resConfirmar.text();
+
+        if (textoConfirmar.trim().startsWith('<')) {
+          throw new Error('Erro ao gravar no banco. Verifique as rotas do backend.');
+        }
+
+        const resultadoConfirmar = JSON.parse(textoConfirmar);
+
+        if (resConfirmar.ok && resultadoConfirmar.sucesso) {
+          // Atualiza com a lista de minutas acumuladas[cite: 17, 18]
+          const minutasExibicao = resultadoConfirmar.dadosAtualizados || minutasAnalisadas;
+          setListaMinutas(minutasExibicao);
+          calcularResumoFinanceiro(minutasExibicao);
+
+          setMensagemStatus(`🎉 ${resultadoConfirmar.criados || minutasAnalisadas.length} viagem(ns) gravada(s) com sucesso no banco de dados! Total pendente: ${minutasExibicao.length}.`);
         } else {
-          setMensagemStatus(`⚠️ ${minutasAnalisadas.length} viagem(ns) calculada(s) localmente. Verifique a conexão com o servidor backend.`);
+          throw new Error(resultadoConfirmar.mensagem || 'Erro ao salvar lançamentos.');
         }
       } catch (erro: any) {
-        console.error('Erro ao processar planilha:', erro);
-        setMensagemStatus(`❌ ${erro.message || 'Erro ao processar o ficheiro Excel.'}`);
+        console.error('Erro na importação:', erro);
+        setMensagemStatus(`❌ ${erro.message || 'Erro ao comunicar com o servidor.'}`);
       } finally {
         setCarregando(false);
       }
@@ -312,7 +314,7 @@ export default function ImportacaoPage() {
             alignItems: 'center',
             gap: '0.5rem',
             backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : mensagemStatus.includes('⚠️') ? '#fffbeb' : '#f0fdf4',
-            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('⚠️️') ? '#b45309' : '#166534',
+            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('⚠️') ? '#b45309' : '#166534',
             border: '1px solid',
             borderColor: mensagemStatus.includes('❌') ? '#fecaca' : mensagemStatus.includes('⚠️') ? '#fde68a' : '#bbf7d0',
           }}>
@@ -435,11 +437,11 @@ export default function ImportacaoPage() {
                           {item.tipoPgto || item['TIPO DE PGTO'] || 'A PRAZO'}
                         </span>
                       </td>
-                      <td style={estilos.td}>R$ {(item.valorBruto || 0).toFixed(2)}</td>
-                      <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {(item.valorRpa || 0).toFixed(2)}</td>
-                      <td style={{ ...estilos.td, color: '#d97706' }}>- R$ {(item.descontoAVista || 0).toFixed(2)}</td>
+                      <td style={estilos.td}>R$ {Number(item.valorBruto || item.frete || 0).toFixed(2)}</td>
+                      <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {Number(item.valorRpa || 0).toFixed(2)}</td>
+                      <td style={{ ...estilos.td, color: '#d97706' }}>- R$ {Number(item.descontoAVista || 0).toFixed(2)}</td>
                       <td style={{ ...estilos.td, fontWeight: '900', color: '#166534', fontSize: '0.9rem' }}>
-                        R$ {(item.valorLiquidoFinal || 0).toFixed(2)}
+                        R$ {Number(item.valorLiquidoFinal || 0).toFixed(2)}
                       </td>
                       <td style={{ ...estilos.td, fontWeight: '700', color: item.jaPagoNoBanco ? '#b91c1c' : item.isDuplicado ? '#b45309' : '#15803d' }}>
                         {item.mensagemAlerta || '✅ Pendente'}
