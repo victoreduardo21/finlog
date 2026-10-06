@@ -2,12 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO DE MINUTAS (LAYOUT IDÊNTICO AO PORTAL DO MOTORISTA)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (CONEXÃO HÍBRIDA LOCAL / PRODUÇÃO)
  * Localização no VS Code: empresa/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Realiza a importação automática da planilha, grava no banco e
- *            renderiza os cartões de Líquido, Bruto, RPA, Pendentes e Pagos
- *            com separação exata entre Fretes À Vista e A Prazo.
+ * Descrição: Processa planilhas Excel (.xlsx), comunica com o backend configurado
+ *            na variável NEXT_PUBLIC_API_URL e calcula o fechamento financeiro.
  * ============================================================================
  */
 
@@ -15,7 +14,7 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 
-// IMPORTAÇÃO DO MENU LATERAL
+// IMPORTAÇÃO DA BARRA LATERAL DE NAVEGAÇÃO
 import Sidebar from '../components/Navbar';
 
 interface MinutaModel {
@@ -44,11 +43,11 @@ export default function ImportacaoPage() {
   // Estados de sessão do utilizador
   const [usuarioLogado, setUsuarioLogado] = useState<any>(null);
 
-  // Estados dos ficheiros e minutas
+  // Estados do ficheiro e lançamentos
   const [nomeArquivo, setNomeArquivo] = useState<string>('');
   const [listaMinutas, setListaMinutas] = useState<MinutaModel[]>([]);
 
-  // Estados de resumo financeiro idênticos à tela do motorista
+  // Cartões de resumo financeiro
   const [resumo, setResumo] = useState({
     totalLiquido: 0,
     totalBruto: 0,
@@ -62,14 +61,14 @@ export default function ImportacaoPage() {
     valorAPrazoLiquido: 0,
   });
 
-  // Estados de feedback visual
+  // Feedback visual
   const [carregando, setCarregando] = useState<boolean>(false);
   const [mensagemStatus, setMensagemStatus] = useState<string | null>(null);
 
-  // URL do backend Express no Render ou Localhost
+  // OBTÉM A URL DO BACKEND PELA VARIÁVEL DE AMBIENTE OU LOCALHOST
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  // 1. Verifica a autenticação ao carregar a página
+  // 1. Carrega dados da sessão local ao entrar na página
   useEffect(() => {
     const token = localStorage.getItem('token');
     const usuarioSalvo = localStorage.getItem('usuario');
@@ -87,7 +86,7 @@ export default function ImportacaoPage() {
   }, [router]);
 
   /**
-   * LEITURA DA PLANILHA E GRAVAÇÃO AUTOMÁTICA NO MONGODB ATLAS
+   * LEITURA DA PLANILHA E ENVIO PARA O BACKEND
    */
   const handleImportacaoDireta = (e: React.ChangeEvent<HTMLInputElement>) => {
     const arquivo = e.target.files?.[0];
@@ -95,7 +94,7 @@ export default function ImportacaoPage() {
 
     setNomeArquivo(arquivo.name);
     setCarregando(true);
-    setMensagemStatus(null);
+    setMensagemStatus('⏳ A ler planilha e a ligar ao servidor...');
 
     const leitor = new FileReader();
 
@@ -107,111 +106,148 @@ export default function ImportacaoPage() {
         const folha = livroExcel.Sheets[primeiraAba];
 
         // Converte as linhas do Excel para JSON
-        const lancamentosBrutos = XLSX.utils.sheet_to_json(folha);
+        const lancamentosBrutos: any[] = XLSX.utils.sheet_to_json(folha);
 
         if (lancamentosBrutos.length === 0) {
-          throw new Error('A planilha selecionada está vazia ou inválida.');
+          setMensagemStatus('⚠️ A planilha selecionada está vazia ou é inválida.');
+          setCarregando(false);
+          return;
         }
 
-        // 1. Envia para análise de regras no backend Express
-        const resAnalise = await fetch(`${apiUrl}/importacao/analisar`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          },
-          body: JSON.stringify({ lancamentos: lancamentosBrutos }),
-        });
+        let minutasAnalisadas: MinutaModel[] = [];
+        let salvouNoBanco = false;
 
-        const textoAnalise = await resAnalise.text();
-
-        if (textoAnalise.trim().startsWith('<')) {
-          throw new Error('A rota (/importacao/analisar) não foi encontrada no servidor.');
-        }
-
-        const resultadoAnalise = JSON.parse(textoAnalise);
-
-        if (!resAnalise.ok || !resultadoAnalise.sucesso) {
-          throw new Error(resultadoAnalise.mensagem || 'Erro ao analisar a planilha.');
-        }
-
-        const minutasAnalisadas: MinutaModel[] = resultadoAnalise.lancamentos || [];
-
-        // 2. Gravação automática imediata no MongoDB Atlas
-        const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-          },
-          body: JSON.stringify({ lancamentos: minutasAnalisadas }),
-        });
-
-        const textoConfirmar = await resConfirmar.text();
-        const resultadoConfirmar = JSON.parse(textoConfirmar);
-
-        if (resConfirmar.ok && resultadoConfirmar.sucesso) {
-          setListaMinutas(minutasAnalisadas);
-
-          // Cálculos exatos idênticos ao Portal do Motorista
-          let bruto = 0;
-          let rpa = 0;
-          let descVista = 0;
-          let liquido = 0;
-          let pendentes = 0;
-          let pagas = 0;
-          let aVistaQtd = 0;
-          let aPrazoQtd = 0;
-          let aVistaLiq = 0;
-          let aPrazoLiq = 0;
-
-          minutasAnalisadas.forEach((m) => {
-            const vBruto = Number(m.valorBruto || 0);
-            const vRpa = Number(m.valorRpa || (vBruto * 0.027));
-            const vDescVista = Number(m.descontoAVista || 0);
-            const vLiq = Number(m.valorLiquidoFinal || (vBruto - vRpa - vDescVista));
-
-            bruto += vBruto;
-            rpa += vRpa;
-            descVista += vDescVista;
-            liquido += vLiq;
-
-            if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
-              pagas++;
-            } else {
-              pendentes++;
-            }
-
-            const tipoStr = String(m.tipoPgto || m['TIPO DE PGTO'] || '').toUpperCase();
-            if (tipoStr.includes('VISTA') || tipoStr.includes('AVISTA')) {
-              aVistaQtd++;
-              aVistaLiq += vLiq;
-            } else {
-              aPrazoQtd++;
-              aPrazoLiq += vLiq;
-            }
+        // TENTATIVA DE ENVIO PARA O BACKEND EXPRESS
+        try {
+          const resAnalise = await fetch(`${apiUrl}/importacao/analisar`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+            },
+            body: JSON.stringify({ lancamentos: lancamentosBrutos }),
           });
 
-          setResumo({
-            totalLiquido: liquido,
-            totalBruto: bruto,
-            totalRpa: rpa,
-            totalDescontoVista: descVista,
-            qtdPendentes: pendentes,
-            qtdPagas: pagas,
-            qtdAVista: aVistaQtd,
-            qtdAPrazo: aPrazoQtd,
-            valorAVistaLiquido: aVistaLiq,
-            valorAPrazoLiquido: aPrazoLiq,
-          });
+          const textoAnalise = await resAnalise.text();
 
-          setMensagemStatus(`✅ ${minutasAnalisadas.length} viagem(ns) encontrada(s) e gravada(s) no sistema.`);
+          if (!textoAnalise.trim().startsWith('<')) {
+            const resultadoAnalise = JSON.parse(textoAnalise);
+
+            if (resAnalise.ok && resultadoAnalise.sucesso) {
+              minutasAnalisadas = resultadoAnalise.lancamentos || [];
+
+              // Confirmação e gravação no MongoDB Atlas[cite: 7]
+              const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+                },
+                body: JSON.stringify({ lancamentos: minutasAnalisadas }),
+              });
+
+              const textoConfirmar = await resConfirmar.text();
+
+              if (!textoConfirmar.trim().startsWith('<')) {
+                const resultadoConfirmar = JSON.parse(textoConfirmar);
+                if (resConfirmar.ok && resultadoConfirmar.sucesso) {
+                  salvouNoBanco = true;
+                }
+              }
+            }
+          }
+        } catch (erroBackend) {
+          console.warn('⚠️ Servidor backend offline. Calculando valores localmente.');
+        }
+
+        // CÁLCULO LOCAL SE O BACKEND ESTIVER OFFLINE
+        if (minutasAnalisadas.length === 0) {
+          minutasAnalisadas = lancamentosBrutos.map((item) => {
+            const vBruto = Number(item['Valor Bruto'] ?? item['valor a pagar'] ?? item.FRETE ?? item.frete ?? 0);
+            const tipoStr = String(item['TIPO DE PGTO'] || item.tipoPgto || '').toUpperCase();
+            const isVista = tipoStr.includes('VISTA') || tipoStr.includes('AVISTA');
+
+            const vRpa = vBruto * 0.027;
+            const vDescVista = isVista ? vBruto * 0.04 : 0;
+            const vLiq = vBruto - vRpa - vDescVista;
+
+            return {
+              ref: String(item.REF || item.ref || ''),
+              cavalo: String(item.CAVALO || item.cavalo || item.PLACA || item.placa || '').toUpperCase(),
+              conteiner: String(item.CONTEINER || item.conteiner || ''),
+              terminalOrigem: String(item['TERMINAL ORIGEM'] || item.terminalOrigem || ''),
+              terminalDestino: String(item['TERMINAL DESTINO'] || item.terminalDestino || ''),
+              tipoPgto: tipoStr,
+              valorBruto: vBruto,
+              valorRpa: vRpa,
+              descontoAVista: vDescVista,
+              valorLiquidoFinal: vLiq,
+              statusPagamento: 'PENDENTE',
+            };
+          });
+        }
+
+        // SOMATÓRIO PARA OS CARTÕES SUPERIORES
+        let bruto = 0;
+        let rpa = 0;
+        let descVista = 0;
+        let liquido = 0;
+        let pendentes = 0;
+        let pagas = 0;
+        let aVistaQtd = 0;
+        let aPrazoQtd = 0;
+        let aVistaLiq = 0;
+        let aPrazoLiq = 0;
+
+        minutasAnalisadas.forEach((m) => {
+          const vBruto = Number(m.valorBruto || 0);
+          const vRpa = Number(m.valorRpa || (vBruto * 0.027));
+          const vDescVista = Number(m.descontoAVista || 0);
+          const vLiq = Number(m.valorLiquidoFinal || (vBruto - vRpa - vDescVista));
+
+          bruto += vBruto;
+          rpa += vRpa;
+          descVista += vDescVista;
+          liquido += vLiq;
+
+          if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
+            pagas++;
+          } else {
+            pendentes++;
+          }
+
+          const tipoStr = String(m.tipoPgto || '').toUpperCase();
+          if (tipoStr.includes('VISTA') || tipoStr.includes('AVISTA')) {
+            aVistaQtd++;
+            aVistaLiq += vLiq;
+          } else {
+            aPrazoQtd++;
+            aPrazoLiq += vLiq;
+          }
+        });
+
+        setListaMinutas(minutasAnalisadas);
+        setResumo({
+          totalLiquido: liquido,
+          totalBruto: bruto,
+          totalRpa: rpa,
+          totalDescontoVista: descVista,
+          qtdPendentes: pendentes,
+          qtdPagas: pagas,
+          qtdAVista: aVistaQtd,
+          qtdAPrazo: aPrazoQtd,
+          valorAVistaLiquido: aVistaLiq,
+          valorAPrazoLiquido: aPrazoLiq,
+        });
+
+        if (salvouNoBanco) {
+          setMensagemStatus(`✅ ${minutasAnalisadas.length} viagem(ns) analisada(s) e gravada(s) no banco de dados!`);
         } else {
-          throw new Error(resultadoConfirmar.mensagem || 'Erro ao gravar minutas.');
+          setMensagemStatus(`⚠️ ${minutasAnalisadas.length} viagem(ns) calculada(s) localmente. Verifique a conexão com o servidor backend.`);
         }
       } catch (erro: any) {
-        console.error('Erro ao importar planilha:', erro);
-        setMensagemStatus(`❌ ${erro.message || 'Erro ao processar e salvar a planilha.'}`);
+        console.error('Erro ao processar planilha:', erro);
+        setMensagemStatus(`❌ ${erro.message || 'Erro ao processar o ficheiro Excel.'}`);
       } finally {
         setCarregando(false);
       }
@@ -264,7 +300,7 @@ export default function ImportacaoPage() {
           </div>
         </section>
 
-        {/* ALERTA VERDE NO MESMO FORMATO DA FOTO DO MOTORISTA */}
+        {/* ALERTA DE STATUS DE GRAVAÇÃO */}
         {mensagemStatus && (
           <div style={{
             marginBottom: '1.5rem',
@@ -275,16 +311,16 @@ export default function ImportacaoPage() {
             display: 'flex',
             alignItems: 'center',
             gap: '0.5rem',
-            backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : '#f0fdf4',
-            color: mensagemStatus.includes('❌') ? '#991b1b' : '#166534',
+            backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : mensagemStatus.includes('⚠️') ? '#fffbeb' : '#f0fdf4',
+            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('⚠️️') ? '#b45309' : '#166534',
             border: '1px solid',
-            borderColor: mensagemStatus.includes('❌') ? '#fecaca' : '#bbf7d0',
+            borderColor: mensagemStatus.includes('❌') ? '#fecaca' : mensagemStatus.includes('⚠️') ? '#fde68a' : '#bbf7d0',
           }}>
             {mensagemStatus}
           </div>
         )}
 
-        {/* TRÊS CARTÕES PRINCIPAIS EXATAMENTE IGUAIS AO DESIGN DO MOTORISTA */}
+        {/* CARTÕES DE RESUMO FINANCEIRO */}
         {listaMinutas.length > 0 && (
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
@@ -355,7 +391,7 @@ export default function ImportacaoPage() {
               </div>
             </div>
 
-            {/* TABELA DETALHADA COM OS DADOS CARREGADOS DA PLANILHA */}
+            {/* TABELA DETALHADA DAS VIAGENS */}
             <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '1.5rem', border: '1px solid #cbd5e1', overflowX: 'auto', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: '800', color: '#0f172a', marginBottom: '1rem' }}>
                 📋 Viagens Registadas ({listaMinutas.length})
@@ -420,7 +456,7 @@ export default function ImportacaoPage() {
   );
 }
 
-// Estilos padronizados baseados na imagem
+// Estilos padronizados
 const estilos: { [key: string]: React.CSSProperties } = {
   cardPadrao: {
     backgroundColor: '#ffffff',
