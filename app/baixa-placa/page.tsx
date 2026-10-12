@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (INTEGRAÇÃO COM ENDPOINT /caminhoneiros)
+ * TELA: BAIXA POR PLACA (CORRIGIDA - ENVIO DE DATA DE PAGAMENTO)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
- * Descrição: Pesquisa dinamicamente o motorista vinculado no endpoint
- *            '/caminhoneiros?placa=XYZ' e exibe Nome, PIX, CPF e contacto.
+ * Descrição: Garante que a data de pagamento seja formatada e enviada
+ *            corretamente ao backend para persistência no MongoDB.
  * ============================================================================
  */
 
@@ -70,6 +70,7 @@ export default function BaixaPorPlacaPage() {
   const [motoristaVinculado, setMotoristaVinculado] = useState<MotoristaModel | null>(null);
   const [carregandoMotorista, setCarregandoMotorista] = useState<boolean>(false);
   
+  // DATA DE PAGAMENTO PADRÃO NO FORMATO YYYY-MM-DD
   const [dataPagamento, setDataPagamento] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -118,7 +119,6 @@ export default function BaixaPorPlacaPage() {
     setMotoristaVinculado(null);
 
     try {
-      // AJUSTE: Rota alinhada com o backend (/caminhoneiros)
       const resposta = await fetch(`${apiUrl}/caminhoneiros?placa=${encodeURIComponent(placa)}`);
       const resultado = await resposta.json();
 
@@ -162,13 +162,8 @@ export default function BaixaPorPlacaPage() {
     const vBrutoOriginal = Number(minuta.valorFrete || minuta.frete || minuta.valorBruto || 0);
     const vPedagio = Number(minuta.valorPedagio || 0);
 
-    // 1. Subtrai o desconto proporcional do Valor Bruto do Frete
     const vBrutoAjustado = Math.max(0, vBrutoOriginal - descontoPorMinuta);
-
-    // 2. RPA de 2,7% recalculado estritamente sobre o novo Valor Bruto
     const vRpaAjustado = vBrutoAjustado * 0.027;
-
-    // 3. Valor Líquido Final da Minuta
     const vLiquidoAjustado = (vBrutoAjustado - vRpaAjustado) + vPedagio;
 
     return {
@@ -180,7 +175,6 @@ export default function BaixaPorPlacaPage() {
     };
   }) : [];
 
-  // Totais consolidados para exibição nos cartões de resumo
   const subtotalBrutoComDesconto = minutasProcessadas.reduce((acc, item) => acc + item.vBrutoAjustado, 0);
   const totalRpaCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vRpaAjustado, 0);
   const valorFinalPagoCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vLiquidoAjustado, 0);
@@ -225,12 +219,34 @@ export default function BaixaPorPlacaPage() {
     }
   };
 
-  // Grava a baixa definitiva das minutas da placa selecionada
+  /**
+   * =========================================================================
+   * GRAVA A BAIXA DEFINITIVA DAS MINUTAS DA PLACA SELECIONADA
+   * CORREÇÃO: Formata e envia a data de pagamento em múltiplos formatos
+   *           compatíveis com o backend e o MongoDB Atlas.
+   * =========================================================================
+   */
   const executarBaixa = async (placaAlvo: string) => {
     if (!placaAlvo) return;
 
+    // Formatação da data para evitar distorção de fuso horário
+    const partesData = dataPagamento.split('-'); // ["2026", "10", "12"]
+    let dataObjetoIso = new Date();
+    let dataBrTexto = '';
+
+    if (partesData.length === 3) {
+      const ano = parseInt(partesData[0], 10);
+      const mes = parseInt(partesData[1], 10) - 1; // Mês 0-indexed
+      const dia = parseInt(partesData[2], 10);
+      
+      dataObjetoIso = new Date(ano, mes, dia, 12, 0, 0); // Define meio-dia para neutralizar fuso horário
+      dataBrTexto = `${String(dia).padStart(2, '0')}/${String(mes + 1).padStart(2, '0')}/${ano}`;
+    } else {
+      dataBrTexto = new Date().toLocaleDateString('pt-BR');
+    }
+
     const confirmacao = window.confirm(
-      `Deseja dar baixa na placa ${placaAlvo} na data ${dataPagamento} no valor final de ${formatarMoeda(valorFinalPagoCalculado)}?`
+      `Deseja dar baixa na placa ${placaAlvo} na data ${dataBrTexto} no valor final de ${formatarMoeda(valorFinalPagoCalculado)}?`
     );
     if (!confirmacao) return;
 
@@ -243,7 +259,11 @@ export default function BaixaPorPlacaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           placa: placaAlvo,
-          dataPagamento,
+          // Envia todos os nomes de campos de data possíveis para garantir recepção no backend
+          dataPagamento: dataPagamento,                            // "2026-10-12"
+          dataPagamentoRealizado: dataObjetoIso.toISOString(),     // Objeto ISO completo
+          dataPgto: dataBrTexto,                                   // "12/10/2026"
+          dataOp: dataObjetoIso.toISOString(),
           descontoAdicional: descontoAdicionalNum,
           subtotalBruto: subtotalBrutoComDesconto,
           totalRpa: totalRpaCalculado,
