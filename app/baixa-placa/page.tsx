@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (CORRIGIDA - ENVIO DE DATA DE PAGAMENTO)
+ * TELA: BAIXA POR PLACA (CORREÇÃO DEFINITIVA DE DUPLICIDADE DE DESCONTO)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
- * Descrição: Garante que a data de pagamento seja formatada e enviada
- *            corretamente ao backend para persistência no MongoDB.
+ * Descrição: Recompõe o valor bruto original das minutas somando o desconto
+ *            já salvo no banco de dados, evitando descontos duplicados na tela.
  * ============================================================================
  */
 
@@ -70,7 +70,7 @@ export default function BaixaPorPlacaPage() {
   const [motoristaVinculado, setMotoristaVinculado] = useState<MotoristaModel | null>(null);
   const [carregandoMotorista, setCarregandoMotorista] = useState<boolean>(false);
   
-  // DATA DE PAGAMENTO PADRÃO NO FORMATO YYYY-MM-DD
+  // Data de Pagamento no formato YYYY-MM-DD
   const [dataPagamento, setDataPagamento] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -112,7 +112,7 @@ export default function BaixaPorPlacaPage() {
     }
   }, [apiUrl]);
 
-  // Busca os dados do motorista no endpoint /caminhoneiros
+  // Busca os dados do motorista vinculado à placa
   const buscarMotoristaPorPlaca = useCallback(async (placa: string) => {
     if (!placa) return;
     setCarregandoMotorista(true);
@@ -151,24 +151,29 @@ export default function BaixaPorPlacaPage() {
   );
 
   // =========================================================================
-  // CÁLCULO DE VALORES COM ABATIMENTO DE DESCONTO
+  // CÁLCULO DE VALORES COM RECOMPOSIÇÃO E PROTEÇÃO CONTRA DUPLICIDADE
   // =========================================================================
   const qtdMinutasTotal = placaSelecionada?.minutas.length || 0;
   const descontoAdicionalNum = Number(descontoAdicionalInput) || 0;
   const descontoPorMinuta = qtdMinutasTotal > 0 ? descontoAdicionalNum / qtdMinutasTotal : 0;
 
-  // Processamento individual das minutas
+  // Processamento individual das minutas com recomposição do valor bruto base
   const minutasProcessadas = placaSelecionada ? placaSelecionada.minutas.map((minuta) => {
-    const vBrutoOriginal = Number(minuta.valorFrete || minuta.frete || minuta.valorBruto || 0);
+    const vBrutoRecebido = Number(minuta.valorBruto || minuta.valorFrete || minuta.frete || 0);
+    const descJaSalvoNaMinuta = Number(minuta.descontoAdicionalAplicado || 0);
     const vPedagio = Number(minuta.valorPedagio || 0);
 
-    const vBrutoAjustado = Math.max(0, vBrutoOriginal - descontoPorMinuta);
+    // RECOMPÕE O VALOR BRUTO BASE REAL (Sem o desconto já aplicado no banco)
+    const vBrutoBaseReal = vBrutoRecebido + descJaSalvoNaMinuta;
+
+    // Aplica o desconto do campo de input UMA ÚNICA VEZ sobre o bruto base
+    const vBrutoAjustado = Math.max(0, vBrutoBaseReal - descontoPorMinuta);
     const vRpaAjustado = vBrutoAjustado * 0.027;
     const vLiquidoAjustado = (vBrutoAjustado - vRpaAjustado) + vPedagio;
 
     return {
       ...minuta,
-      vBrutoOriginal,
+      vBrutoBaseReal,
       vBrutoAjustado,
       vRpaAjustado,
       vLiquidoAjustado,
@@ -187,9 +192,22 @@ export default function BaixaPorPlacaPage() {
     buscarMotoristaPorPlaca(item.placa);
   };
 
-  // Envia o desconto atualizado para ser salvo no MongoDB
+  /**
+   * =========================================================================
+   * SALVA APENAS O DESCONTO COM JANELA DE CONFIRMAÇÃO
+   * =========================================================================
+   */
   const salvarApenasDesconto = async () => {
     if (!placaSelecionada) return;
+
+    // Janela de confirmação do desconto
+    const confirmacao = window.confirm(
+      `Deseja realmente aplicar o desconto adicional de ${formatarMoeda(descontoAdicionalNum)} para a placa ${placaSelecionada.placa}?`
+    );
+
+    if (!confirmacao) {
+      return;
+    }
 
     setCarregando(true);
     setMensagemStatus(`⏳ A salvar desconto para a placa ${placaSelecionada.placa}...`);
@@ -222,24 +240,21 @@ export default function BaixaPorPlacaPage() {
   /**
    * =========================================================================
    * GRAVA A BAIXA DEFINITIVA DAS MINUTAS DA PLACA SELECIONADA
-   * CORREÇÃO: Formata e envia a data de pagamento em múltiplos formatos
-   *           compatíveis com o backend e o MongoDB Atlas.
    * =========================================================================
    */
   const executarBaixa = async (placaAlvo: string) => {
     if (!placaAlvo) return;
 
-    // Formatação da data para evitar distorção de fuso horário
-    const partesData = dataPagamento.split('-'); // ["2026", "10", "12"]
+    const partesData = dataPagamento.split('-');
     let dataObjetoIso = new Date();
     let dataBrTexto = '';
 
     if (partesData.length === 3) {
       const ano = parseInt(partesData[0], 10);
-      const mes = parseInt(partesData[1], 10) - 1; // Mês 0-indexed
+      const mes = parseInt(partesData[1], 10) - 1;
       const dia = parseInt(partesData[2], 10);
       
-      dataObjetoIso = new Date(ano, mes, dia, 12, 0, 0); // Define meio-dia para neutralizar fuso horário
+      dataObjetoIso = new Date(ano, mes, dia, 12, 0, 0);
       dataBrTexto = `${String(dia).padStart(2, '0')}/${String(mes + 1).padStart(2, '0')}/${ano}`;
     } else {
       dataBrTexto = new Date().toLocaleDateString('pt-BR');
@@ -259,10 +274,9 @@ export default function BaixaPorPlacaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           placa: placaAlvo,
-          // Envia todos os nomes de campos de data possíveis para garantir recepção no backend
-          dataPagamento: dataPagamento,                            // "2026-10-12"
-          dataPagamentoRealizado: dataObjetoIso.toISOString(),     // Objeto ISO completo
-          dataPgto: dataBrTexto,                                   // "12/10/2026"
+          dataPagamento: dataPagamento,
+          dataPagamentoRealizado: dataObjetoIso.toISOString(),
+          dataPgto: dataBrTexto,
           dataOp: dataObjetoIso.toISOString(),
           descontoAdicional: descontoAdicionalNum,
           subtotalBruto: subtotalBrutoComDesconto,
@@ -322,7 +336,7 @@ export default function BaixaPorPlacaPage() {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1.5rem', marginTop: '1rem' }}>
           
-          {/* PAINEL ESQUERDO: LISTA E CAMPO DE PESQUISA POR PLACA */}
+          {/* PAINEL ESQUERDO: LISTA DE PLACAS */}
           <section style={estilos.cardBox}>
             <h3 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '1.1rem' }}>
               🚛 Veículos / Placas ({placasFiltradas.length})
@@ -379,7 +393,7 @@ export default function BaixaPorPlacaPage() {
             </div>
           </section>
 
-          {/* PAINEL DIREITO: DETALHES, MOTORISTA VINCULADO E TABELA */}
+          {/* PAINEL DIREITO: DETALHES E TABELA */}
           <section style={estilos.cardBox}>
             {placaSelecionada ? (
               <>
@@ -442,7 +456,7 @@ export default function BaixaPorPlacaPage() {
                   )}
                 </div>
 
-                {/* PAINEL DE DATA E DESCONTO */}
+                {/* PAINEL DE DATA E DESCONTO COM CONFIRMAÇÃO */}
                 <div style={estilos.painelAjustes}>
                   <div>
                     <label style={estilos.labelAjuste}>📅 Data do Pagamento *</label>
