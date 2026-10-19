@@ -2,19 +2,17 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (REFLITA DESCONTOS DA BAIXA)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (REAJUSTADA COM 4% À VISTA)
  * Localização no VS Code: empresa/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Lê diretamente os valores atualizados pós-desconto gravados no banco
- *            e agrupa 'AVISTA' + 'INTEGRAL' juntos vs 'PRAZO' sozinho.
+ * Descrição: Exibe totais em tempo real aplicando RPA (2,7%) e Desconto À Vista (4%)
+ *            com seletor interativo para alteração de modalidade de pagamento.
  * ============================================================================
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
-
-// IMPORTAÇÃO DA BARRA LATERAL DE NAVEGAÇÃO
 import Sidebar from '../components/Navbar';
 
 interface MinutaModel {
@@ -28,10 +26,12 @@ interface MinutaModel {
   servico?: string;
   tipoPgto?: string;
   dataEntrega?: string;
+  valorFreteOriginal?: number;
   valorFrete?: number;
   valorPedagio?: number;
   valorBruto?: number;
   valorRpa?: number;
+  descontoAVista?: number;
   valorLiquidoFinal?: number;
   valorFinalPago?: number;
   descontoAdicionalAplicado?: number;
@@ -48,6 +48,7 @@ export default function ImportacaoPage() {
   const [usuarioLogado, setUsuarioLogado] = useState<any>(null);
   const [nomeArquivo, setNomeArquivo] = useState<string>('');
   const [listaMinutas, setListaMinutas] = useState<MinutaModel[]>([]);
+  const [filtroTipoPgto, setFiltroTipoPgto] = useState<'TODOS' | 'A VISTA' | 'PRAZO' | 'INTEGRAL'>('TODOS');
 
   const [resumo, setResumo] = useState({
     totalLiquido: 0,
@@ -55,6 +56,7 @@ export default function ImportacaoPage() {
     totalPedagio: 0,
     totalBruto: 0,
     totalRpa: 0,
+    totalDescontoAVista: 0,
     qtdPendentes: 0,
     qtdPagas: 0,
 
@@ -63,6 +65,7 @@ export default function ImportacaoPage() {
       freteBruto: 0,
       pedagio: 0,
       rpa: 0,
+      descontoAVista: 0,
       liquidoFinal: 0,
     },
 
@@ -80,9 +83,6 @@ export default function ImportacaoPage() {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  /**
-   * Helper para formatar moeda com exatamente 2 casas decimais
-   */
   const formatarMoeda = (valor: number) => {
     return Number(valor || 0).toLocaleString('pt-BR', {
       minimumFractionDigits: 2,
@@ -91,12 +91,13 @@ export default function ImportacaoPage() {
   };
 
   /**
-   * CÁLCULO DOS TOTAIS FINANCEIROS (LÊ VALORES COM DESCONTO DO BANCO)
+   * CÁLCULO DOS TOTAIS FINANCEIROS COM AS REGRAS OFICIAIS (RPA 2,7% + À VISTA 4%)
    */
   const calcularResumoFinanceiro = useCallback((minutas: MinutaModel[]) => {
     let freteTotal = 0;
     let pedagioTotal = 0;
     let rpaTotal = 0;
+    let descAVistaTotal = 0;
     let liquidoTotal = 0;
     let pendentes = 0;
     let pagas = 0;
@@ -106,6 +107,7 @@ export default function ImportacaoPage() {
       freteBruto: 0,
       pedagio: 0,
       rpa: 0,
+      descontoAVista: 0,
       liquidoFinal: 0,
     };
 
@@ -118,25 +120,24 @@ export default function ImportacaoPage() {
     };
 
     minutas.forEach((m) => {
-      // 1. Lê os valores brutos e pedágio
-      const vFrete = Number(m.valorFrete ?? m.frete ?? m['Valor Bruto'] ?? m.valorBruto ?? 0);
-      const vPedagio = Number(m.valorPedagio ?? m.pedagio ?? m['PEDAGIO'] ?? m['PEDÁGIO'] ?? 0);
+      const descAdd = Number(m.descontoAdicionalAplicado || 0);
+      const vFreteBase = Number(m.valorFreteOriginal || m.valorFrete || m.frete || 0) + descAdd;
+      const vPedagio = Number(m.valorPedagio || m.pedagio || 0);
       
-      // 2. Lê RPA e Valor Líquido já atualizados com desconto se existirem no banco
-      const vRpa = m.valorRpa !== undefined ? Number(m.valorRpa) : (vFrete * 0.027);
-      
-      const vLiq = m.valorFinalPago !== undefined && m.valorFinalPago > 0
-        ? Number(m.valorFinalPago)
-        : m.valorLiquidoFinal !== undefined && m.valorLiquidoFinal > 0
-          ? Number(m.valorLiquidoFinal)
-          : ((vFrete - vRpa) + vPedagio);
+      const tipoStr = String(m.tipoPgto || m['TIPO DE PGTO'] || 'PRAZO').toUpperCase().trim();
+      const isAVista = tipoStr.includes('VISTA');
+      const isVistaOuIntegral = isAVista || tipoStr.includes('INTEGRAL');
 
-      const tipoStr = String(m.tipoPgto || m['TIPO DE PGTO'] || '').toUpperCase().trim();
-      const isVistaOuIntegral = tipoStr.includes('VISTA') || tipoStr.includes('AVISTA') || tipoStr.includes('INTEGRAL');
+      // Aplicações dos Descontos
+      const freteAjustado = Math.max(0, vFreteBase - descAdd);
+      const vRpa = Number((freteAjustado * 0.027).toFixed(2));
+      const vDescAVista = isAVista ? Number((freteAjustado * 0.04).toFixed(2)) : 0;
+      const vLiq = Number((freteAjustado - (vRpa + vDescAVista) + vPedagio).toFixed(2));
 
-      freteTotal += vFrete;
+      freteTotal += vFreteBase;
       pedagioTotal += vPedagio;
       rpaTotal += vRpa;
+      descAVistaTotal += vDescAVista;
       liquidoTotal += vLiq;
 
       if (m.jaPagoNoBanco || m.statusPagamento === 'PAGO') {
@@ -147,13 +148,14 @@ export default function ImportacaoPage() {
 
       if (isVistaOuIntegral) {
         aVistaIntegral.qtd++;
-        aVistaIntegral.freteBruto += vFrete;
+        aVistaIntegral.freteBruto += vFreteBase;
         aVistaIntegral.pedagio += vPedagio;
         aVistaIntegral.rpa += vRpa;
+        aVistaIntegral.descontoAVista += vDescAVista;
         aVistaIntegral.liquidoFinal += vLiq;
       } else {
         aPrazo.qtd++;
-        aPrazo.freteBruto += vFrete;
+        aPrazo.freteBruto += vFreteBase;
         aPrazo.pedagio += vPedagio;
         aPrazo.rpa += vRpa;
         aPrazo.liquidoFinal += vLiq;
@@ -166,12 +168,30 @@ export default function ImportacaoPage() {
       totalPedagio: pedagioTotal,
       totalBruto: freteTotal + pedagioTotal,
       totalRpa: rpaTotal,
+      totalDescontoAVista: descAVistaTotal,
       qtdPendentes: pendentes,
       qtdPagas: pagas,
       aVistaIntegral,
       aPrazo,
     });
   }, []);
+
+  const buscarMinutasBanco = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const resposta = await fetch(`${apiUrl}/importacao`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const resultado = await resposta.json();
+
+      if (resposta.ok && resultado.sucesso && Array.isArray(resultado.dados)) {
+        setListaMinutas(resultado.dados);
+        calcularResumoFinanceiro(resultado.dados);
+      }
+    } catch (erro) {
+      console.warn('Não foi possível carregar minutas iniciais:', erro);
+    }
+  }, [apiUrl, calcularResumoFinanceiro]);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -189,24 +209,37 @@ export default function ImportacaoPage() {
       return;
     }
 
-    const buscarMinutasBanco = async () => {
-      try {
-        const resposta = await fetch(`${apiUrl}/importacao`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const resultado = await resposta.json();
-
-        if (resposta.ok && resultado.sucesso && Array.isArray(resultado.dados)) {
-          setListaMinutas(resultado.dados);
-          calcularResumoFinanceiro(resultado.dados);
-        }
-      } catch (erro) {
-        console.warn('Não foi possível carregar minutas iniciais:', erro);
-      }
-    };
-
     buscarMinutasBanco();
-  }, [router, apiUrl, calcularResumoFinanceiro]);
+  }, [router, buscarMinutasBanco]);
+
+  /**
+   * ALTERAR TIPO DE PAGAMENTO DINAMICAMENTE
+   */
+  const handleAlterarTipoPgto = async (minutaId: string, novoTipo: string) => {
+    try {
+      setCarregando(true);
+      const res = await fetch(`${apiUrl}/importacao/alterar-tipo-pgto`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+        },
+        body: JSON.stringify({ minutaId, novoTipoPgto: novoTipo }),
+      });
+
+      const resultado = await res.json();
+      if (res.ok && resultado.sucesso) {
+        setMensagemStatus(`🎉 Modalidade alterada para ${novoTipo} com sucesso!`);
+        await buscarMinutasBanco();
+      } else {
+        setMensagemStatus(`⚠️ ${resultado.mensagem}`);
+      }
+    } catch (e) {
+      setMensagemStatus('❌ Falha ao atualizar tipo de pagamento.');
+    } finally {
+      setCarregando(false);
+    }
+  };
 
   const handleImportacaoDireta = (e: React.ChangeEvent<HTMLInputElement>) => {
     const arquivo = e.target.files?.[0];
@@ -242,12 +275,7 @@ export default function ImportacaoPage() {
           body: JSON.stringify({ lancamentos: lancamentosBrutos }),
         });
 
-        const textoAnalise = await resAnalise.text();
-        if (textoAnalise.trim().startsWith('<')) {
-          throw new Error('Servidor respondeu em HTML. Verifique o backend.');
-        }
-
-        const resultadoAnalise = JSON.parse(textoAnalise);
+        const resultadoAnalise = await resAnalise.json();
         const minutasAnalisadas: MinutaModel[] = resultadoAnalise.lancamentos || [];
 
         const resConfirmar = await fetch(`${apiUrl}/importacao/confirmar`, {
@@ -259,20 +287,15 @@ export default function ImportacaoPage() {
           body: JSON.stringify({ lancamentos: minutasAnalisadas }),
         });
 
-        const textoConfirmar = await resConfirmar.text();
-        const resultadoConfirmar = JSON.parse(textoConfirmar);
+        const resultadoConfirmar = await resConfirmar.json();
 
         if (resConfirmar.ok && resultadoConfirmar.sucesso) {
-          const minutasExibicao = resultadoConfirmar.dadosAtualizados || minutasAnalisadas;
-          setListaMinutas(minutasExibicao);
-          calcularResumoFinanceiro(minutasExibicao);
-
+          await buscarMinutasBanco();
           setMensagemStatus(`🎉 ${resultadoConfirmar.criados || minutasAnalisadas.length} viagem(ns) gravadas no banco com sucesso!`);
         } else {
           throw new Error(resultadoConfirmar.mensagem || 'Erro ao salvar lançamentos.');
         }
       } catch (erro: any) {
-        console.error('Erro na importação:', erro);
         setMensagemStatus(`❌ ${erro.message || 'Erro ao comunicar com o servidor.'}`);
       } finally {
         setCarregando(false);
@@ -282,22 +305,31 @@ export default function ImportacaoPage() {
     leitor.readAsArrayBuffer(arquivo);
   };
 
+  // Filtro de exibição na tabela
+  const minutasExibicao = listaMinutas.filter((m) => {
+    if (filtroTipoPgto === 'TODOS') return true;
+    const tp = String(m.tipoPgto || '').toUpperCase();
+    if (filtroTipoPgto === 'A VISTA') return tp.includes('VISTA');
+    if (filtroTipoPgto === 'PRAZO') return tp.includes('PRAZO');
+    if (filtroTipoPgto === 'INTEGRAL') return tp.includes('INTEGRAL');
+    return true;
+  });
+
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc', display: 'flex', color: '#0f172a' }}>
       <Sidebar usuario={usuarioLogado} />
 
       <main style={{ marginLeft: '250px', flex: 1, padding: '2rem 3rem' }}>
-        
         <header style={{ marginBottom: '2rem' }}>
           <h1 style={{ fontSize: '1.75rem', fontWeight: '800', color: '#0f172a', margin: 0 }}>
             Importação e Fechamento de Minutas
           </h1>
           <p style={{ color: '#64748b', margin: '0.25rem 0 0 0', fontSize: '0.9rem', fontWeight: '500' }}>
-            Totais em tempo real sincronizados com descontos e baixas
+            Totais em tempo real recalculados com RPA (2,7%) e Desconto À Vista (4%)
           </p>
         </header>
 
-        {/* ÁREA DE CARREGAMENTO */}
+        {/* ÁREA DE IMPORTAÇÃO DE PLANILHA */}
         <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '1.5rem', marginBottom: '1.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
             <div>
@@ -319,12 +351,10 @@ export default function ImportacaoPage() {
           </div>
         )}
 
-        {/* CARTÕES FINANCEIROS GERAIS */}
         {listaMinutas.length > 0 && (
           <>
+            {/* CARTÕES FINANCEIROS GERAIS */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
-              
-              {/* CARTÃO 1: TOTAL LÍQUIDO A RECEBER */}
               <div style={estilos.cardPadrao}>
                 <span style={estilos.tituloCard}>TOTAL LÍQUIDO A RECEBER</span>
                 <strong style={{ fontSize: '1.8rem', color: '#16a34a', fontWeight: '900', margin: '0.4rem 0' }}>
@@ -335,7 +365,6 @@ export default function ImportacaoPage() {
                 </span>
               </div>
 
-              {/* CARTÃO 2: FRETES PENDENTES */}
               <div style={estilos.cardPadrao}>
                 <span style={estilos.tituloCard}>FRETES PENDENTES</span>
                 <strong style={{ fontSize: '1.8rem', color: '#d97706', fontWeight: '900', margin: '0.4rem 0' }}>
@@ -344,7 +373,6 @@ export default function ImportacaoPage() {
                 <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>Aguardando pagamento</span>
               </div>
 
-              {/* CARTÃO 3: FRETES PAGOS */}
               <div style={estilos.cardPadrao}>
                 <span style={estilos.tituloCard}>FRETES PAGOS</span>
                 <strong style={{ fontSize: '1.8rem', color: '#2563eb', fontWeight: '900', margin: '0.4rem 0' }}>
@@ -352,13 +380,10 @@ export default function ImportacaoPage() {
                 </strong>
                 <span style={{ fontSize: '0.8rem', color: '#64748b', fontWeight: '700' }}>Pagamentos efetuados</span>
               </div>
-
             </div>
 
-            {/* CARTÕES DETALHADOS: À VISTA/INTEGRAL JUNTOS vs A PRAZO SOZINHO */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem', marginBottom: '2rem' }}>
-              
-              {/* CARTÃO DETALHADO: À VISTA / INTEGRAL */}
+            {/* CARTÕES DETALHADOS: À VISTA/INTEGRAL VS A PRAZO */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
               <div style={{ backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '1.25rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#92400e', textTransform: 'uppercase' }}>
@@ -372,6 +397,7 @@ export default function ImportacaoPage() {
                 <div style={{ margin: '0.75rem 0', fontSize: '0.825rem', color: '#78350f', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                   <div>• Frete Bruto: <strong>R$ {formatarMoeda(resumo.aVistaIntegral.freteBruto)}</strong></div>
                   <div>• RPA (-2,7%): <strong style={{ color: '#dc2626' }}>- R$ {formatarMoeda(resumo.aVistaIntegral.rpa)}</strong></div>
+                  <div>• Desc. À Vista (-4%): <strong style={{ color: '#dc2626' }}>- R$ {formatarMoeda(resumo.aVistaIntegral.descontoAVista)}</strong></div>
                 </div>
 
                 <div style={{ borderTop: '1px solid #fde68a', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
@@ -382,7 +408,6 @@ export default function ImportacaoPage() {
                 </div>
               </div>
 
-              {/* CARTÃO DETALHADO: A PRAZO */}
               <div style={{ backgroundColor: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '12px', padding: '1.25rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.75rem', fontWeight: '800', color: '#334155', textTransform: 'uppercase' }}>
@@ -405,13 +430,34 @@ export default function ImportacaoPage() {
                   </strong>
                 </div>
               </div>
-
             </div>
 
-            {/* TABELA DE REGISTOS */}
+            {/* BOTÕES DE FILTRO POR MODALIDADE */}
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+              {(['TODOS', 'A VISTA', 'PRAZO', 'INTEGRAL'] as const).map((tipo) => (
+                <button
+                  key={tipo}
+                  onClick={() => setFiltroTipoPgto(tipo)}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    borderRadius: '6px',
+                    fontWeight: '700',
+                    fontSize: '0.8rem',
+                    border: '1px solid #cbd5e1',
+                    cursor: 'pointer',
+                    backgroundColor: filtroTipoPgto === tipo ? '#2563eb' : '#ffffff',
+                    color: filtroTipoPgto === tipo ? '#ffffff' : '#334155',
+                  }}
+                >
+                  {tipo}
+                </button>
+              ))}
+            </div>
+
+            {/* TABELA DE REGISTOS COM TIPO DE PGTO EDITÁVEL */}
             <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '1.5rem', border: '1px solid #cbd5e1', overflowX: 'auto' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: '800', color: '#0f172a', marginBottom: '1rem' }}>
-                📋 Viagens Registadas ({listaMinutas.length})
+                📋 Viagens Registadas ({minutasExibicao.length})
               </h3>
 
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
@@ -428,23 +474,44 @@ export default function ImportacaoPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {listaMinutas.map((item, idx) => {
-                    const vFrete = Number(item.valorFrete ?? item.frete ?? item['Valor Bruto'] ?? item.valorBruto ?? 0);
-                    const vRpa = item.valorRpa !== undefined ? Number(item.valorRpa) : (vFrete * 0.027);
+                  {minutasExibicao.map((item) => {
+                    const descAdd = Number(item.descontoAdicionalAplicado || 0);
+                    const vFreteBase = Number(item.valorFreteOriginal || item.valorFrete || item.frete || 0) + descAdd;
+                    const vPedagio = Number(item.valorPedagio || item.pedagio || 0);
                     
-                    const vLiq = item.valorFinalPago !== undefined && item.valorFinalPago > 0
-                      ? Number(item.valorFinalPago)
-                      : item.valorLiquidoFinal !== undefined && item.valorLiquidoFinal > 0
-                        ? Number(item.valorLiquidoFinal)
-                        : (vFrete - vRpa);
+                    const tipoStr = String(item.tipoPgto || 'PRAZO').toUpperCase().trim();
+                    const isAVista = tipoStr.includes('VISTA');
+
+                    const freteAjustado = Math.max(0, vFreteBase - descAdd);
+                    const vRpa = Number((freteAjustado * 0.027).toFixed(2));
+                    const vDescAVista = isAVista ? Number((freteAjustado * 0.04).toFixed(2)) : 0;
+                    const vLiq = Number((freteAjustado - (vRpa + vDescAVista) + vPedagio).toFixed(2));
 
                     return (
-                      <tr key={idx} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: item.jaPagoNoBanco || item.statusPagamento === 'PAGO' ? '#f0fdf4' : '#ffffff' }}>
+                      <tr key={item._id} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: item.jaPagoNoBanco || item.statusPagamento === 'PAGO' ? '#f0fdf4' : '#ffffff' }}>
                         <td style={estilos.td}>{item.ref || item.REF || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800' }}>{item.cavalo || item.CAVALO || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800', color: '#2563eb' }}>{item.conteiner || item.CONTEINER || '-'}</td>
-                        <td style={estilos.td}>{item.tipoPgto || item['TIPO DE PGTO'] || 'A PRAZO'}</td>
-                        <td style={estilos.td}>R$ {vFrete.toFixed(2)}</td>
+                        <td style={estilos.td}>
+                          <select
+                            value={item.tipoPgto || 'PRAZO'}
+                            onChange={(e) => item._id && handleAlterarTipoPgto(item._id, e.target.value)}
+                            style={{
+                              padding: '0.35rem 0.5rem',
+                              borderRadius: '6px',
+                              border: '1px solid #cbd5e1',
+                              fontWeight: '700',
+                              backgroundColor: isAVista ? '#fef3c7' : '#ffffff',
+                              color: isAVista ? '#b45309' : '#0f172a',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <option value="PRAZO">PRAZO</option>
+                            <option value="A VISTA">À VISTA (4% desc.)</option>
+                            <option value="INTEGRAL">INTEGRAL</option>
+                          </select>
+                        </td>
+                        <td style={estilos.td}>R$ {vFreteBase.toFixed(2)}</td>
                         <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {vRpa.toFixed(2)}</td>
                         <td style={{ ...estilos.td, fontWeight: '900', color: '#166534', fontSize: '0.9rem' }}>
                           R$ {vLiq.toFixed(2)}

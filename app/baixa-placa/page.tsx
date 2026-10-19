@@ -2,11 +2,9 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (CORREÇÃO DEFINITIVA DE DUPLICIDADE DE DESCONTO)
+ * TELA: BAIXA POR PLACA (VERSÃO ESTÁVEL SEM LOOP INFINITO + FILTROS)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
- * Descrição: Recompõe o valor bruto original das minutas somando o desconto
- *            já salvo no banco de dados, evitando descontos duplicados na tela.
  * ============================================================================
  */
 
@@ -23,10 +21,12 @@ interface MinutaItem {
   dataOp: string;
   tipoPgto: string;
   frete: number;
+  valorFreteOriginal?: number;
   valorFrete?: number;
   valorPedagio?: number;
   valorBruto?: number;
   valorRpa?: number;
+  descontoAVista?: number;
   descontoAdicionalAplicado?: number;
   valorLiquidoFinal?: number;
   statusPagamento: 'PENDENTE' | 'PAGO';
@@ -66,6 +66,9 @@ export default function BaixaPorPlacaPage() {
   // Campo de Pesquisa por Placa
   const [termoPesquisa, setTermoPesquisa] = useState<string>('');
 
+  // Filtro por Modalidade de Pagamento
+  const [filtroTipoPgto, setFiltroTipoPgto] = useState<'TODOS' | 'A VISTA' | 'PRAZO' | 'INTEGRAL'>('TODOS');
+
   // Dados do Motorista Vinculado à Placa
   const [motoristaVinculado, setMotoristaVinculado] = useState<MotoristaModel | null>(null);
   const [carregandoMotorista, setCarregandoMotorista] = useState<boolean>(false);
@@ -86,7 +89,10 @@ export default function BaixaPorPlacaPage() {
     return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
-  // Busca veículos e minutas pendentes do servidor
+  /**
+   * BUSCA VEÍCULOS E MINUTAS PENDENTES DO SERVIDOR
+   * (Sem dependência de 'placaSelecionada' para evitar Loop Infinito)
+   */
   const carregarDadosAgrupados = useCallback(async () => {
     setCarregando(true);
     setMensagemStatus('⏳ A carregar veículos e minutas pendentes...');
@@ -97,6 +103,7 @@ export default function BaixaPorPlacaPage() {
 
       if (resposta.ok && resultado.dados) {
         setListaPlacas(resultado.dados);
+
         if (resultado.dados.length === 0) {
           setMensagemStatus('🎉 Nenhuma placa pendente de pagamento!');
         } else {
@@ -145,43 +152,63 @@ export default function BaixaPorPlacaPage() {
     carregarDadosAgrupados();
   }, [router, carregarDadosAgrupados]);
 
-  // Filtro dinâmico de placas por termo pesquisado
-  const placasFiltradas = listaPlacas.filter((p) =>
-    p.placa.toUpperCase().includes(termoPesquisa.toUpperCase().trim())
-  );
+  // FILTRAGEM COMBINADA DA LISTA DE PLACAS (PESQUISA + BOTÕES DE FILTRO ABAIXO DA BUSCA)
+  const placasFiltradas = listaPlacas.filter((p) => {
+    const bateuPlaca = p.placa.toUpperCase().includes(termoPesquisa.toUpperCase().trim());
+    if (!bateuPlaca) return false;
+
+    if (filtroTipoPgto === 'TODOS') return true;
+
+    return p.minutas.some((m) => {
+      const tp = String(m.tipoPgto || '').toUpperCase();
+      if (filtroTipoPgto === 'A VISTA') return tp.includes('VISTA');
+      if (filtroTipoPgto === 'PRAZO') return tp.includes('PRAZO');
+      if (filtroTipoPgto === 'INTEGRAL') return tp.includes('INTEGRAL');
+      return true;
+    });
+  });
 
   // =========================================================================
-  // CÁLCULO DE VALORES COM RECOMPOSIÇÃO E PROTEÇÃO CONTRA DUPLICIDADE
+  // CÁLCULO DE VALORES COM REGRA DE 4% À VISTA E RPA DE 2,7%
   // =========================================================================
   const qtdMinutasTotal = placaSelecionada?.minutas.length || 0;
   const descontoAdicionalNum = Number(descontoAdicionalInput) || 0;
   const descontoPorMinuta = qtdMinutasTotal > 0 ? descontoAdicionalNum / qtdMinutasTotal : 0;
 
-  // Processamento individual das minutas com recomposição do valor bruto base
+  // Processamento individual das minutas
   const minutasProcessadas = placaSelecionada ? placaSelecionada.minutas.map((minuta) => {
-    const vBrutoRecebido = Number(minuta.valorBruto || minuta.valorFrete || minuta.frete || 0);
-    const descJaSalvoNaMinuta = Number(minuta.descontoAdicionalAplicado || 0);
+    const descJaSalvo = Number(minuta.descontoAdicionalAplicado || 0);
+    const vFreteAtual = Number(minuta.valorFreteOriginal || minuta.valorFrete || minuta.frete || 0);
+    const vFreteBaseReal = vFreteAtual + descJaSalvo;
     const vPedagio = Number(minuta.valorPedagio || 0);
 
-    // RECOMPÕE O VALOR BRUTO BASE REAL (Sem o desconto já aplicado no banco)
-    const vBrutoBaseReal = vBrutoRecebido + descJaSalvoNaMinuta;
+    const tipoStr = String(minuta.tipoPgto || 'PRAZO').toUpperCase().trim();
+    const isAVista = tipoStr.includes('VISTA');
 
-    // Aplica o desconto do campo de input UMA ÚNICA VEZ sobre o bruto base
-    const vBrutoAjustado = Math.max(0, vBrutoBaseReal - descontoPorMinuta);
-    const vRpaAjustado = vBrutoAjustado * 0.027;
-    const vLiquidoAjustado = (vBrutoAjustado - vRpaAjustado) + vPedagio;
+    // 1. Frete Ajustado após Desconto Adicional
+    const vFreteAjustado = Math.max(0, vFreteBaseReal - descontoPorMinuta);
+
+    // 2. RPA (2,7%) e Desconto À Vista (4%)
+    const vRpaAjustado = Number((vFreteAjustado * 0.027).toFixed(2));
+    const vDescAVistaAjustado = isAVista ? Number((vFreteAjustado * 0.04).toFixed(2)) : 0;
+
+    // 3. Líquido Final
+    const vLiquidoAjustado = Number((vFreteAjustado - (vRpaAjustado + vDescAVistaAjustado) + vPedagio).toFixed(2));
 
     return {
       ...minuta,
-      vBrutoBaseReal,
-      vBrutoAjustado,
+      vFreteBaseReal,
+      vFreteAjustado,
       vRpaAjustado,
+      vDescAVistaAjustado,
       vLiquidoAjustado,
+      isAVista,
     };
   }) : [];
 
-  const subtotalBrutoComDesconto = minutasProcessadas.reduce((acc, item) => acc + item.vBrutoAjustado, 0);
+  const subtotalBrutoComDesconto = minutasProcessadas.reduce((acc, item) => acc + (item.vFreteAjustado + Number(item.valorPedagio || 0)), 0);
   const totalRpaCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vRpaAjustado, 0);
+  const totalDescAVistaCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vDescAVistaAjustado, 0);
   const valorFinalPagoCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vLiquidoAjustado, 0);
 
   // Seleciona uma placa na lista lateral
@@ -193,21 +220,16 @@ export default function BaixaPorPlacaPage() {
   };
 
   /**
-   * =========================================================================
-   * SALVA APENAS O DESCONTO COM JANELA DE CONFIRMAÇÃO
-   * =========================================================================
+   * SALVA APENAS O DESCONTO
    */
   const salvarApenasDesconto = async () => {
     if (!placaSelecionada) return;
 
-    // Janela de confirmação do desconto
     const confirmacao = window.confirm(
       `Deseja realmente aplicar o desconto adicional de ${formatarMoeda(descontoAdicionalNum)} para a placa ${placaSelecionada.placa}?`
     );
 
-    if (!confirmacao) {
-      return;
-    }
+    if (!confirmacao) return;
 
     setCarregando(true);
     setMensagemStatus(`⏳ A salvar desconto para a placa ${placaSelecionada.placa}...`);
@@ -238,9 +260,7 @@ export default function BaixaPorPlacaPage() {
   };
 
   /**
-   * =========================================================================
    * GRAVA A BAIXA DEFINITIVA DAS MINUTAS DA PLACA SELECIONADA
-   * =========================================================================
    */
   const executarBaixa = async (placaAlvo: string) => {
     if (!placaAlvo) return;
@@ -277,7 +297,6 @@ export default function BaixaPorPlacaPage() {
           dataPagamento: dataPagamento,
           dataPagamentoRealizado: dataObjetoIso.toISOString(),
           dataPgto: dataBrTexto,
-          dataOp: dataObjetoIso.toISOString(),
           descontoAdicional: descontoAdicionalNum,
           subtotalBruto: subtotalBrutoComDesconto,
           totalRpa: totalRpaCalculado,
@@ -315,7 +334,7 @@ export default function BaixaPorPlacaPage() {
             Baixa de Minutas por Placa
           </h1>
           <p style={{ color: '#64748b', margin: '0.25rem 0 0 0', fontSize: '0.9rem' }}>
-            Filtre por placa, verifique o motorista vinculado e confirme a baixa
+            Filtre por placa, verifique a modalidade de pagamento e confirme a baixa
           </p>
         </header>
 
@@ -336,13 +355,14 @@ export default function BaixaPorPlacaPage() {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1.5rem', marginTop: '1rem' }}>
           
-          {/* PAINEL ESQUERDO: LISTA DE PLACAS */}
+          {/* PAINEL ESQUERDO: BARRA DE PESQUISA + BOTÕES DE FILTRO ABAIXO */}
           <section style={estilos.cardBox}>
             <h3 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '1.1rem' }}>
               🚛 Veículos / Placas ({placasFiltradas.length})
             </h3>
 
-            <div style={{ marginBottom: '1rem' }}>
+            {/* BARRA DE PESQUISA DE PLACAS */}
+            <div style={{ marginBottom: '0.75rem' }}>
               <input
                 type="text"
                 placeholder="🔍 Pesquisar por placa..."
@@ -351,18 +371,40 @@ export default function BaixaPorPlacaPage() {
                 style={estilos.inputPesquisa}
               />
             </div>
+
+            {/* BOTÕES DE FILTRO POSICIONADOS EXATAMENTE ABAIXO DA BARRA DE BUSCA */}
+            <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              {(['TODOS', 'A VISTA', 'PRAZO', 'INTEGRAL'] as const).map((tipo) => (
+                <button
+                  key={tipo}
+                  onClick={() => setFiltroTipoPgto(tipo)}
+                  style={{
+                    padding: '0.35rem 0.65rem',
+                    borderRadius: '6px',
+                    fontWeight: '700',
+                    fontSize: '0.75rem',
+                    border: '1px solid #cbd5e1',
+                    cursor: 'pointer',
+                    backgroundColor: filtroTipoPgto === tipo ? '#2563eb' : '#ffffff',
+                    color: filtroTipoPgto === tipo ? '#ffffff' : '#334155',
+                  }}
+                >
+                  {tipo}
+                </button>
+              ))}
+            </div>
             
-            <div style={{ overflowY: 'auto', maxHeight: '550px' }}>
+            {/* LISTA DE PLACAS */}
+            <div style={{ overflowY: 'auto', maxHeight: '520px' }}>
               {placasFiltradas.length === 0 ? (
                 <p style={{ color: '#64748b', fontSize: '0.9rem', textAlign: 'center', padding: '1rem' }}>
-                  {termoPesquisa ? 'Nenhuma placa encontrada.' : 'Nenhuma placa pendente de pagamento.'}
+                  {termoPesquisa || filtroTipoPgto !== 'TODOS' ? 'Nenhuma placa encontrada.' : 'Nenhuma placa pendente.'}
                 </p>
               ) : (
                 placasFiltradas.map((item) => {
                   const isSelected = placaSelecionada?.placa === item.placa;
                   const vBruto = item.totalValorBruto || 0;
-                  const rpaList = vBruto * 0.027;
-                  const vLiquidoFinal = vBruto - rpaList;
+                  const vLiquidoFinal = item.totalValorLiquido || (vBruto * 0.973);
 
                   return (
                     <div
@@ -393,7 +435,7 @@ export default function BaixaPorPlacaPage() {
             </div>
           </section>
 
-          {/* PAINEL DIREITO: DETALHES E TABELA */}
+          {/* PAINEL DIREITO: DETALHES DA PLACA */}
           <section style={estilos.cardBox}>
             {placaSelecionada ? (
               <>
@@ -456,7 +498,7 @@ export default function BaixaPorPlacaPage() {
                   )}
                 </div>
 
-                {/* PAINEL DE DATA E DESCONTO COM CONFIRMAÇÃO */}
+                {/* PAINEL DE DATA E DESCONTO ADICIONAL */}
                 <div style={estilos.painelAjustes}>
                   <div>
                     <label style={estilos.labelAjuste}>📅 Data do Pagamento *</label>
@@ -497,7 +539,7 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* CARDS DE RESUMO FINANCEIRO */}
+                {/* CARDS DE RESUMO FINANCEIRO DA PLACA */}
                 <div style={estilos.gridResumoPlaca}>
                   <div style={estilos.cardResumoItem}>
                     <span style={estilos.rotuloResumoItem}>Total Bruto (Com Desconto)</span>
@@ -505,14 +547,16 @@ export default function BaixaPorPlacaPage() {
                   </div>
 
                   <div style={estilos.cardResumoItem}>
-                    <span style={estilos.rotuloResumoItem}>Desconto RPA (2,7%)</span>
+                    <span style={estilos.rotuloResumoItem}>RPA (2,7%)</span>
                     <strong style={{ fontSize: '1.1rem', color: '#dc2626' }}>- {formatarMoeda(totalRpaCalculado)}</strong>
                   </div>
 
-                  <div style={estilos.cardResumoItem}>
-                    <span style={estilos.rotuloResumoItem}>Desconto Aplicado</span>
-                    <strong style={{ fontSize: '1.1rem', color: '#d97706' }}>- {formatarMoeda(descontoAdicionalNum)}</strong>
-                  </div>
+                  {totalDescAVistaCalculado > 0 && (
+                    <div style={estilos.cardResumoItem}>
+                      <span style={estilos.rotuloResumoItem}>Desc. À Vista (4%)</span>
+                      <strong style={{ fontSize: '1.1rem', color: '#d97706' }}>- {formatarMoeda(totalDescAVistaCalculado)}</strong>
+                    </div>
+                  )}
 
                   <div style={{ ...estilos.cardResumoItem, backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }}>
                     <span style={estilos.rotuloResumoItem}>VALOR FINAL A PAGAR</span>
@@ -520,7 +564,7 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* TABELA DE MINUTAS */}
+                {/* TABELA DE MINUTAS FORMATADA */}
                 <div style={{ overflowX: 'auto', marginTop: '1.25rem' }}>
                   <table style={estilos.tabela}>
                     <thead>
@@ -528,8 +572,9 @@ export default function BaixaPorPlacaPage() {
                         <th style={estilos.th}>REF / Container</th>
                         <th style={estilos.th}>Origem → Destino</th>
                         <th style={estilos.th}>Tipo PGTO</th>
-                        <th style={estilos.th}>Valor Bruto (Ajustado)</th>
+                        <th style={estilos.th}>Valor Bruto</th>
                         <th style={estilos.th}>RPA (2,7%)</th>
+                        <th style={estilos.th}>Desc. À Vista (4%)</th>
                         <th style={estilos.th}>Valor Líquido</th>
                       </tr>
                     </thead>
@@ -542,12 +587,26 @@ export default function BaixaPorPlacaPage() {
                             <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{minuta.conteiner}</span>
                           </td>
                           <td style={estilos.td}>{minuta.terminalOrigem} → {minuta.terminalDestino}</td>
-                          <td style={estilos.td}>{minuta.tipoPgto}</td>
+                          <td style={estilos.td}>
+                            <span style={{
+                              padding: '0.3rem 0.6rem',
+                              borderRadius: '6px',
+                              fontWeight: '700',
+                              fontSize: '0.8rem',
+                              backgroundColor: minuta.isAVista ? '#fef3c7' : '#e2e8f0',
+                              color: minuta.isAVista ? '#b45309' : '#334155'
+                            }}>
+                              {minuta.tipoPgto || 'PRAZO'}
+                            </span>
+                          </td>
                           <td style={{ ...estilos.td, fontWeight: 'bold', color: '#0f172a' }}>
-                            {formatarMoeda(minuta.vBrutoAjustado)}
+                            {formatarMoeda(minuta.vFreteAjustado + Number(minuta.valorPedagio || 0))}
                           </td>
                           <td style={{ ...estilos.td, color: '#dc2626' }}>
                             - {formatarMoeda(minuta.vRpaAjustado)}
+                          </td>
+                          <td style={{ ...estilos.td, color: minuta.isAVista ? '#d97706' : '#94a3b8' }}>
+                            {minuta.isAVista ? `- ${formatarMoeda(minuta.vDescAVistaAjustado)}` : 'R$ 0,00'}
                           </td>
                           <td style={{ ...estilos.td, fontWeight: 'bold', color: '#16a34a' }}>
                             {formatarMoeda(minuta.vLiquidoAjustado)}
@@ -590,7 +649,7 @@ const estilos: { [key: string]: React.CSSProperties } = {
     fontWeight: '600'
   },
   cardMotorista: { backgroundColor: '#f1f5f9', border: '1px solid #cbd5e1', padding: '0.85rem 1rem', borderRadius: '10px', marginBottom: '1rem' },
-  botaoBaixar: { backgroundColor: '#16a34a', color: '#ffffff', padding: '0.75rem 1.25rem', border: 'none', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.9rem' },
+  botaoBaixar: { backgroundColor: '#16a34a', color: '#ffffff', padding: '0.75rem 1.25rem', border: 'none', borderRadius: '8px', fontWeight: '700', cursor: 'pointer', fontSize: '0.9rem', whiteSpace: 'nowrap' },
   painelAjustes: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '10px', border: '1px solid #e2e8f0', marginBottom: '1.25rem' },
   labelAjuste: { display: 'block', marginBottom: '0.35rem', fontSize: '0.8rem', fontWeight: '700', color: '#0f172a' },
   inputAjuste: { width: '100%', padding: '0.6rem 0.75rem', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: '#ffffff', color: '#0f172a', fontSize: '0.9rem', fontWeight: '600', outline: 'none', boxSizing: 'border-box' },
