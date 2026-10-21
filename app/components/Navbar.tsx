@@ -3,7 +3,9 @@
 /**
  * ============================================================================
  * COMPONENTE: BARRA DE NAVEGAÇÃO LATERAL COMPACTA (SIDEBAR)
+ * Localização no projeto: web/components/Navbar.tsx
  * Tecnologias: Next.js 13+ (App Router), React, CSS-in-JS Inline
+ * Descrição: Inclui o novo atalho para a tela de Relatórios de Minutas Pagas.
  * ============================================================================
  */
 
@@ -22,12 +24,13 @@ export default function Sidebar({ usuario }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Lista dos 10 links de navegação solicitados
+  // Lista dos links de navegação com o novo menu "Relatório de Pagos"
   const itensMenu = [
     { nome: 'Importar Planilha', rota: '/importacao' },
     { nome: 'Baixa por Placa', rota: '/baixa-placa' },
+    { nome: 'Relatório de Pagos', rota: '/relatorios' },
     { nome: 'Cadastro de Clientes', rota: '/clientes' },
-    { nome: 'Cadastro de caminhoneiros', rota: '/caminhoneiros' },
+    { nome: 'Cadastro de Caminhoneiros', rota: '/caminhoneiros' },
     { nome: 'Rotas e Valores', rota: '/rotas' },
     { nome: 'Usuários', rota: '/usuarios' },
     { nome: 'Configurações', rota: '/configuracoes' },
@@ -74,7 +77,7 @@ export default function Sidebar({ usuario }: SidebarProps) {
         })}
       </nav>
 
-      {/* BOTÃO DE SAIR NO RODA PÉ */}
+      {/* BOTÃO DE SAIR NO RODAPÉ */}
       <div style={estilos.rodape}>
         <button onClick={handleLogout} style={estilos.botaoSair}>
           🚪 Sair do Sistema
@@ -124,17 +127,17 @@ const estilos: { [key: string]: React.CSSProperties } = {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
-    gap: '0.2rem', // Espaçamento reduzido entre os botões
-    overflowY: 'hidden', // Elimina a barra de rolagem (scrollbar)
+    gap: '0.2rem', // Espaçamento reduzido
+    overflowY: 'hidden',
   },
   linkItem: {
     display: 'flex',
     alignItems: 'center',
-    padding: '0.45rem 0.75rem', // Padding reduzido para tornar compacto
+    padding: '0.45rem 0.75rem',
     borderRadius: '6px',
     color: '#94a3b8',
     textDecoration: 'none',
-    fontSize: '0.82rem', // Fonte ligeiramente menor e mais elegante
+    fontSize: '0.82rem',
     fontWeight: '500',
     transition: 'all 0.15s ease-in-out',
   },
