@@ -2,9 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (VERSÃO ESTÁVEL SEM LOOP INFINITO + FILTROS)
+ * TELA: BAIXA POR PLACA (INTEGRAÇÃO COMPLETA DE ALTERAÇÃO EM LOTE COM O BACKEND)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
+ * Descrição: O seletor de modalidade chama a rota 'PATCH /importacao/alterar-tipo-pgto-placa'
+ *            para atualizar todas as minutas da placa selecionada em uma única requisição.
  * ============================================================================
  */
 
@@ -33,7 +35,9 @@ interface MinutaItem {
 }
 
 interface PlacaAgrupada {
+  chaveUnica?: string;
   placa: string;
+  modalidade?: 'A VISTA' | 'PRAZO';
   totalValorBruto: number;
   totalValorLiquido: number;
   qtdMinutas: number;
@@ -59,21 +63,19 @@ export default function BaixaPorPlacaPage() {
   const router = useRouter();
   const [usuario, setUsuario] = useState<{ nome: string; perfil: string } | null>(null);
   
-  // Lista original e placa selecionada
+  // Lista de placas agrupadas e seleção ativa
   const [listaPlacas, setListaPlacas] = useState<PlacaAgrupada[]>([]);
   const [placaSelecionada, setPlacaSelecionada] = useState<PlacaAgrupada | null>(null);
   
-  // Campo de Pesquisa por Placa
+  // Filtros do painel esquerdo
   const [termoPesquisa, setTermoPesquisa] = useState<string>('');
-
-  // Filtro por Modalidade de Pagamento
   const [filtroTipoPgto, setFiltroTipoPgto] = useState<'TODOS' | 'A VISTA' | 'PRAZO' | 'INTEGRAL'>('TODOS');
 
-  // Dados do Motorista Vinculado à Placa
+  // Motorista associado
   const [motoristaVinculado, setMotoristaVinculado] = useState<MotoristaModel | null>(null);
   const [carregandoMotorista, setCarregandoMotorista] = useState<boolean>(false);
   
-  // Data de Pagamento no formato YYYY-MM-DD
+  // Formulário de baixa
   const [dataPagamento, setDataPagamento] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -84,14 +86,13 @@ export default function BaixaPorPlacaPage() {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  // Helper para formatação de moeda BRL
+  // Helper para formatação em BRL
   const formatarMoeda = (valor: number) => {
     return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
   /**
-   * BUSCA VEÍCULOS E MINUTAS PENDENTES DO SERVIDOR
-   * (Sem dependência de 'placaSelecionada' para evitar Loop Infinito)
+   * BUSCA MINUTAS AGRUPADAS POR PLACA E MODALIDADE NO BACKEND
    */
   const carregarDadosAgrupados = useCallback(async () => {
     setCarregando(true);
@@ -107,7 +108,7 @@ export default function BaixaPorPlacaPage() {
         if (resultado.dados.length === 0) {
           setMensagemStatus('🎉 Nenhuma placa pendente de pagamento!');
         } else {
-          setMensagemStatus(`✅ Encontradas ${resultado.totalPlacas} placa(s) pendente(s).`);
+          setMensagemStatus(`✅ Encontrados ${resultado.totalPlacas} relatório(s) pendente(s).`);
         }
       } else {
         setMensagemStatus('⚠️ Nenhuma minuta encontrada.');
@@ -119,7 +120,7 @@ export default function BaixaPorPlacaPage() {
     }
   }, [apiUrl]);
 
-  // Busca os dados do motorista vinculado à placa
+  // Consulta motorista cadastrado para a placa
   const buscarMotoristaPorPlaca = useCallback(async (placa: string) => {
     if (!placa) return;
     setCarregandoMotorista(true);
@@ -152,30 +153,70 @@ export default function BaixaPorPlacaPage() {
     carregarDadosAgrupados();
   }, [router, carregarDadosAgrupados]);
 
-  // FILTRAGEM COMBINADA DA LISTA DE PLACAS (PESQUISA + BOTÕES DE FILTRO ABAIXO DA BUSCA)
+  /**
+   * ALTERAÇÃO EM LOTE DA MODALIDADE VIA ENDPOINT DEDICADO DO BACKEND
+   */
+  const handleAlterarTipoPgtoEmLote = async (novoTipo: string) => {
+    if (!placaSelecionada || placaSelecionada.minutas.length === 0) return;
+
+    const confirmacao = window.confirm(
+      `Deseja alterar a modalidade de TODAS as minutas da placa ${placaSelecionada.placa} para "${novoTipo}"?`
+    );
+
+    if (!confirmacao) return;
+
+    try {
+      setCarregando(true);
+      setMensagemStatus(`⏳ A atualizar modalidade da placa ${placaSelecionada.placa} no servidor...`);
+
+      const resposta = await fetch(`${apiUrl}/importacao/alterar-tipo-pgto-placa`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+        },
+        body: JSON.stringify({
+          placa: placaSelecionada.placa,
+          modalidadeAtual: placaSelecionada.modalidade,
+          novoTipoPgto: novoTipo,
+        }),
+      });
+
+      const resultado = await resposta.json();
+
+      if (resposta.ok && resultado.sucesso) {
+        setMensagemStatus(`🎉 Modalidade da placa ${placaSelecionada.placa} alterada para ${novoTipo} com sucesso!`);
+        setPlacaSelecionada(null);
+        await carregarDadosAgrupados();
+      } else {
+        setMensagemStatus(`❌ Erro do servidor: ${resultado.mensagem || 'Falha ao atualizar minutas em lote.'}`);
+      }
+    } catch (erro: any) {
+      setMensagemStatus('❌ Falha na comunicação com o servidor backend.');
+    } finally {
+      setCarregando(false);
+    }
+  };
+
+  // Aplicação dos filtros de busca e modalidade na lista lateral
   const placasFiltradas = listaPlacas.filter((p) => {
     const bateuPlaca = p.placa.toUpperCase().includes(termoPesquisa.toUpperCase().trim());
     if (!bateuPlaca) return false;
 
     if (filtroTipoPgto === 'TODOS') return true;
 
-    return p.minutas.some((m) => {
-      const tp = String(m.tipoPgto || '').toUpperCase();
-      if (filtroTipoPgto === 'A VISTA') return tp.includes('VISTA');
-      if (filtroTipoPgto === 'PRAZO') return tp.includes('PRAZO');
-      if (filtroTipoPgto === 'INTEGRAL') return tp.includes('INTEGRAL');
-      return true;
-    });
+    const mod = String(p.modalidade || '').toUpperCase();
+    if (filtroTipoPgto === 'A VISTA') return mod.includes('VISTA');
+    if (filtroTipoPgto === 'PRAZO') return mod.includes('PRAZO');
+    if (filtroTipoPgto === 'INTEGRAL') return mod.includes('INTEGRAL') || mod.includes('VISTA');
+    return true;
   });
 
-  // =========================================================================
-  // CÁLCULO DE VALORES COM REGRA DE 4% À VISTA E RPA DE 2,7%
-  // =========================================================================
+  // Cálculo das minutas da placa selecionada
   const qtdMinutasTotal = placaSelecionada?.minutas.length || 0;
   const descontoAdicionalNum = Number(descontoAdicionalInput) || 0;
   const descontoPorMinuta = qtdMinutasTotal > 0 ? descontoAdicionalNum / qtdMinutasTotal : 0;
 
-  // Processamento individual das minutas
   const minutasProcessadas = placaSelecionada ? placaSelecionada.minutas.map((minuta) => {
     const descJaSalvo = Number(minuta.descontoAdicionalAplicado || 0);
     const vFreteAtual = Number(minuta.valorFreteOriginal || minuta.valorFrete || minuta.frete || 0);
@@ -188,12 +229,14 @@ export default function BaixaPorPlacaPage() {
     // 1. Frete Ajustado após Desconto Adicional
     const vFreteAjustado = Math.max(0, vFreteBaseReal - descontoPorMinuta);
 
-    // 2. RPA (2,7%) e Desconto À Vista (4%)
-    const vRpaAjustado = Number((vFreteAjustado * 0.027).toFixed(2));
+    // 2. Desconto À Vista (4%)
     const vDescAVistaAjustado = isAVista ? Number((vFreteAjustado * 0.04).toFixed(2)) : 0;
 
-    // 3. Líquido Final
-    const vLiquidoAjustado = Number((vFreteAjustado - (vRpaAjustado + vDescAVistaAjustado) + vPedagio).toFixed(2));
+    // 3. RPA (2,7%)
+    const vRpaAjustado = Number((vFreteAjustado * 0.027).toFixed(2));
+
+    // 4. Valor Líquido Final
+    const vLiquidoAjustado = Number((vFreteAjustado - vDescAVistaAjustado - vRpaAjustado + vPedagio).toFixed(2));
 
     return {
       ...minuta,
@@ -211,7 +254,7 @@ export default function BaixaPorPlacaPage() {
   const totalDescAVistaCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vDescAVistaAjustado, 0);
   const valorFinalPagoCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vLiquidoAjustado, 0);
 
-  // Seleciona uma placa na lista lateral
+  // Seleciona uma placa manualmente e fixa a seleção
   const selecionarPlaca = (item: PlacaAgrupada) => {
     setPlacaSelecionada(item);
     const descSalvo = item.minutas.reduce((acc, m) => acc + (m.descontoAdicionalAplicado || 0), 0);
@@ -220,13 +263,13 @@ export default function BaixaPorPlacaPage() {
   };
 
   /**
-   * SALVA APENAS O DESCONTO
+   * SALVA O DESCONTO ADICIONAL
    */
   const salvarApenasDesconto = async () => {
     if (!placaSelecionada) return;
 
     const confirmacao = window.confirm(
-      `Deseja realmente aplicar o desconto adicional de ${formatarMoeda(descontoAdicionalNum)} para a placa ${placaSelecionada.placa}?`
+      `Deseja aplicar o desconto adicional de ${formatarMoeda(descontoAdicionalNum)} para a placa ${placaSelecionada.placa} (${placaSelecionada.modalidade || 'PRAZO'})?`
     );
 
     if (!confirmacao) return;
@@ -240,6 +283,7 @@ export default function BaixaPorPlacaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           placa: placaSelecionada.placa,
+          modalidade: placaSelecionada.modalidade,
           descontoAdicional: descontoAdicionalNum,
         }),
       });
@@ -260,10 +304,10 @@ export default function BaixaPorPlacaPage() {
   };
 
   /**
-   * GRAVA A BAIXA DEFINITIVA DAS MINUTAS DA PLACA SELECIONADA
+   * EXECUTA A BAIXA DEFINITIVA DAS MINUTAS
    */
   const executarBaixa = async (placaAlvo: string) => {
-    if (!placaAlvo) return;
+    if (!placaAlvo || !placaSelecionada) return;
 
     const partesData = dataPagamento.split('-');
     let dataObjetoIso = new Date();
@@ -281,7 +325,7 @@ export default function BaixaPorPlacaPage() {
     }
 
     const confirmacao = window.confirm(
-      `Deseja dar baixa na placa ${placaAlvo} na data ${dataBrTexto} no valor final de ${formatarMoeda(valorFinalPagoCalculado)}?`
+      `Deseja dar baixa na placa ${placaAlvo} (${placaSelecionada.modalidade || 'PRAZO'}) na data ${dataBrTexto} no valor final de ${formatarMoeda(valorFinalPagoCalculado)}?`
     );
     if (!confirmacao) return;
 
@@ -294,6 +338,7 @@ export default function BaixaPorPlacaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           placa: placaAlvo,
+          modalidade: placaSelecionada.modalidade,
           dataPagamento: dataPagamento,
           dataPagamentoRealizado: dataObjetoIso.toISOString(),
           dataPgto: dataBrTexto,
@@ -355,13 +400,12 @@ export default function BaixaPorPlacaPage() {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1.5rem', marginTop: '1rem' }}>
           
-          {/* PAINEL ESQUERDO: BARRA DE PESQUISA + BOTÕES DE FILTRO ABAIXO */}
+          {/* PAINEL ESQUERDO */}
           <section style={estilos.cardBox}>
             <h3 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '1.1rem' }}>
               🚛 Veículos / Placas ({placasFiltradas.length})
             </h3>
 
-            {/* BARRA DE PESQUISA DE PLACAS */}
             <div style={{ marginBottom: '0.75rem' }}>
               <input
                 type="text"
@@ -372,7 +416,6 @@ export default function BaixaPorPlacaPage() {
               />
             </div>
 
-            {/* BOTÕES DE FILTRO POSICIONADOS EXATAMENTE ABAIXO DA BARRA DE BUSCA */}
             <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
               {(['TODOS', 'A VISTA', 'PRAZO', 'INTEGRAL'] as const).map((tipo) => (
                 <button
@@ -394,21 +437,20 @@ export default function BaixaPorPlacaPage() {
               ))}
             </div>
             
-            {/* LISTA DE PLACAS */}
             <div style={{ overflowY: 'auto', maxHeight: '520px' }}>
               {placasFiltradas.length === 0 ? (
                 <p style={{ color: '#64748b', fontSize: '0.9rem', textAlign: 'center', padding: '1rem' }}>
-                  {termoPesquisa || filtroTipoPgto !== 'TODOS' ? 'Nenhuma placa encontrada.' : 'Nenhuma placa pendente.'}
+                  {termoPesquisa || filtroTipoPgto !== 'TODOS' ? 'Nenhum relatório encontrado.' : 'Nenhuma placa pendente.'}
                 </p>
               ) : (
-                placasFiltradas.map((item) => {
-                  const isSelected = placaSelecionada?.placa === item.placa;
-                  const vBruto = item.totalValorBruto || 0;
-                  const vLiquidoFinal = item.totalValorLiquido || (vBruto * 0.973);
+                placasFiltradas.map((item, index) => {
+                  const chaveItem = item.chaveUnica || `${item.placa}_${item.modalidade || 'PRAZO'}_${index}`;
+                  const isSelected = placaSelecionada?.placa === item.placa && (placaSelecionada?.modalidade || 'PRAZO') === (item.modalidade || 'PRAZO');
+                  const isAVista = (item.modalidade || '').includes('VISTA');
 
                   return (
                     <div
-                      key={item.placa}
+                      key={chaveItem}
                       onClick={() => selecionarPlaca(item)}
                       style={{
                         ...estilos.itemPlaca,
@@ -417,14 +459,26 @@ export default function BaixaPorPlacaPage() {
                       }}
                     >
                       <div>
-                        <strong style={{ fontSize: '1.1rem', color: '#0f172a' }}>{item.placa}</strong>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <strong style={{ fontSize: '1.1rem', color: '#0f172a' }}>{item.placa}</strong>
+                          <span style={{
+                            fontSize: '0.65rem',
+                            fontWeight: '800',
+                            padding: '0.15rem 0.4rem',
+                            borderRadius: '4px',
+                            backgroundColor: isAVista ? '#fef3c7' : '#e2e8f0',
+                            color: isAVista ? '#b45309' : '#334155',
+                          }}>
+                            {item.modalidade || 'PRAZO'}
+                          </span>
+                        </div>
                         <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.8rem', color: '#64748b' }}>
-                          {item.qtdMinutas} viagem(ns) pendente(s)
+                          {item.qtdMinutas} viagem(ns)
                         </p>
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <strong style={{ color: '#16a34a', fontSize: '1rem' }}>
-                          {formatarMoeda(vLiquidoFinal)}
+                          {formatarMoeda(item.totalValorLiquido)}
                         </strong>
                         <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Líquido Final</div>
                       </div>
@@ -435,30 +489,71 @@ export default function BaixaPorPlacaPage() {
             </div>
           </section>
 
-          {/* PAINEL DIREITO: DETALHES DA PLACA */}
+          {/* PAINEL DIREITO */}
           <section style={estilos.cardBox}>
             {placaSelecionada ? (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>
                   <div>
-                    <h2 style={{ margin: 0, fontSize: '1.3rem', color: '#0f172a' }}>
-                      Placa: <span style={{ color: '#2563eb' }}>{placaSelecionada.placa}</span>
-                    </h2>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <h2 style={{ margin: 0, fontSize: '1.3rem', color: '#0f172a' }}>
+                        Placa: <span style={{ color: '#2563eb' }}>{placaSelecionada.placa}</span>
+                      </h2>
+                      <span style={{
+                        fontSize: '0.75rem',
+                        fontWeight: '800',
+                        padding: '0.25rem 0.6rem',
+                        borderRadius: '6px',
+                        backgroundColor: (placaSelecionada.modalidade || '').includes('VISTA') ? '#fef3c7' : '#e2e8f0',
+                        color: (placaSelecionada.modalidade || '').includes('VISTA') ? '#b45309' : '#334155',
+                      }}>
+                        {placaSelecionada.modalidade || 'PRAZO'}
+                      </span>
+                    </div>
                     <p style={{ margin: '0.25rem 0 0 0', color: '#64748b', fontSize: '0.85rem' }}>
                       {placaSelecionada.minutas.length} minuta(s) selecionada(s)
                     </p>
                   </div>
 
-                  <button
-                    onClick={() => executarBaixa(placaSelecionada.placa)}
-                    disabled={carregando}
-                    style={estilos.botaoBaixar}
-                  >
-                    {carregando ? '⏳ A processar...' : '✅ Dar Baixa nas Minutas'}
-                  </button>
+                  {/* SELETOR DE MODALIDADE E BOTÃO DE BAIXA */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <label style={{ fontSize: '0.7rem', fontWeight: '700', color: '#64748b' }}>
+                        Alterar Modalidade:
+                      </label>
+                      <select
+                        value={placaSelecionada.modalidade || 'PRAZO'}
+                        onChange={(e) => handleAlterarTipoPgtoEmLote(e.target.value)}
+                        disabled={carregando}
+                        style={{
+                          padding: '0.5rem 0.75rem',
+                          borderRadius: '8px',
+                          border: '1px solid #cbd5e1',
+                          fontWeight: '700',
+                          backgroundColor: '#ffffff',
+                          color: '#0f172a',
+                          cursor: 'pointer',
+                          fontSize: '0.85rem',
+                          outline: 'none',
+                        }}
+                      >
+                        <option value="PRAZO">PRAZO</option>
+                        <option value="A VISTA">À VISTA (4% desc.)</option>
+                        <option value="INTEGRAL">INTEGRAL</option>
+                      </select>
+                    </div>
+
+                    <button
+                      onClick={() => executarBaixa(placaSelecionada.placa)}
+                      disabled={carregando}
+                      style={{ ...estilos.botaoBaixar, marginTop: '1.1rem' }}
+                    >
+                      {carregando ? '⏳ A processar...' : '✅ Dar Baixa nas Minutas'}
+                    </button>
+                  </div>
                 </div>
 
-                {/* DADOS DO MOTORISTA VINCULADO */}
+                {/* ALERTA / DADOS DO MOTORISTA */}
                 <div style={estilos.cardMotorista}>
                   {carregandoMotorista ? (
                     <span style={{ fontSize: '0.85rem', color: '#64748b' }}>⏳ A buscar dados do motorista...</span>
@@ -476,20 +571,6 @@ export default function BaixaPorPlacaPage() {
                           {motoristaVinculado.pix || motoristaVinculado.chavePix || 'Não cadastrado'}
                         </strong>
                       </div>
-                      {motoristaVinculado.cpf && (
-                        <div>
-                          <span style={{ color: '#64748b', fontWeight: '600' }}>🪪 CPF/CNPJ: </span>
-                          <span style={{ color: '#334155', fontWeight: '700' }}>{motoristaVinculado.cpf}</span>
-                        </div>
-                      )}
-                      {(motoristaVinculado.whatsapp || motoristaVinculado.contato || motoristaVinculado.telefone) && (
-                        <div>
-                          <span style={{ color: '#64748b', fontWeight: '600' }}>📞 Contato: </span>
-                          <span style={{ color: '#334155', fontWeight: '700' }}>
-                            {motoristaVinculado.whatsapp || motoristaVinculado.contato || motoristaVinculado.telefone}
-                          </span>
-                        </div>
-                      )}
                     </div>
                   ) : (
                     <span style={{ fontSize: '0.85rem', color: '#d97706', fontWeight: '600' }}>
@@ -498,7 +579,7 @@ export default function BaixaPorPlacaPage() {
                   )}
                 </div>
 
-                {/* PAINEL DE DATA E DESCONTO ADICIONAL */}
+                {/* DATAS E DESCONTO ADICIONAL */}
                 <div style={estilos.painelAjustes}>
                   <div>
                     <label style={estilos.labelAjuste}>📅 Data do Pagamento *</label>
@@ -539,7 +620,7 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* CARDS DE RESUMO FINANCEIRO DA PLACA */}
+                {/* CARTÕES FINANCEIROS */}
                 <div style={estilos.gridResumoPlaca}>
                   <div style={estilos.cardResumoItem}>
                     <span style={estilos.rotuloResumoItem}>Total Bruto (Com Desconto)</span>
@@ -564,7 +645,7 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* TABELA DE MINUTAS FORMATADA */}
+                {/* TABELA DE MINUTAS */}
                 <div style={{ overflowX: 'auto', marginTop: '1.25rem' }}>
                   <table style={estilos.tabela}>
                     <thead>
@@ -580,7 +661,7 @@ export default function BaixaPorPlacaPage() {
                     </thead>
                     <tbody>
                       {minutasProcessadas.map((minuta, index) => (
-                        <tr key={index} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                        <tr key={minuta._id || `minuta_${index}`} style={{ borderBottom: '1px solid #e2e8f0' }}>
                           <td style={estilos.td}>
                             <strong>{minuta.ref || '-'}</strong>
                             <br />
@@ -621,7 +702,7 @@ export default function BaixaPorPlacaPage() {
               <div style={{ textAlign: 'center', padding: '3rem', color: '#64748b' }}>
                 <span style={{ fontSize: '3rem' }}>👈</span>
                 <p style={{ marginTop: '1rem', fontSize: '1rem' }}>
-                  Selecione uma placa na lista ao lado para ver o motorista e efetuar a baixa.
+                  Selecione uma placa na lista ao lado para ver os detalhes e dar baixa.
                 </p>
               </div>
             )}

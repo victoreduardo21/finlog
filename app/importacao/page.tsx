@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (REAJUSTADA COM 4% À VISTA)
- * Localização no VS Code: empresa/app/importacao/page.tsx
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (SEM SELETOR DE MODALIDADE)
+ * Localização no VS Code: web/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Exibe totais em tempo real aplicando RPA (2,7%) e Desconto À Vista (4%)
- *            com seletor interativo para alteração de modalidade de pagamento.
+ * Descrição: Exibe a tabela de minutas importadas mostrando o tipo de pagamento
+ *            como texto simples (badge) sem permitir alteração por seletor.
  * ============================================================================
  */
 
@@ -91,7 +91,7 @@ export default function ImportacaoPage() {
   };
 
   /**
-   * CÁLCULO DOS TOTAIS FINANCEIROS COM AS REGRAS OFICIAIS (RPA 2,7% + À VISTA 4%)
+   * CÁLCULO DOS TOTAIS FINANCEIROS SEGUINDO A ORDEM ESTRITA DE CÁLCULO
    */
   const calcularResumoFinanceiro = useCallback((minutas: MinutaModel[]) => {
     let freteTotal = 0;
@@ -128,11 +128,17 @@ export default function ImportacaoPage() {
       const isAVista = tipoStr.includes('VISTA');
       const isVistaOuIntegral = isAVista || tipoStr.includes('INTEGRAL');
 
-      // Aplicações dos Descontos
+      // 1. Frete Ajustado após Desconto Adicional
       const freteAjustado = Math.max(0, vFreteBase - descAdd);
-      const vRpa = Number((freteAjustado * 0.027).toFixed(2));
+
+      // 2. Desconto À Vista (4%) sobre o valor ajustado
       const vDescAVista = isAVista ? Number((freteAjustado * 0.04).toFixed(2)) : 0;
-      const vLiq = Number((freteAjustado - (vRpa + vDescAVista) + vPedagio).toFixed(2));
+
+      // 3. RPA (2,7%) sobre o valor ajustado
+      const vRpa = Number((freteAjustado * 0.027).toFixed(2));
+
+      // 4. Valor Líquido Final
+      const vLiq = Number((freteAjustado - vDescAVista - vRpa + vPedagio).toFixed(2));
 
       freteTotal += vFreteBase;
       pedagioTotal += vPedagio;
@@ -213,34 +219,8 @@ export default function ImportacaoPage() {
   }, [router, buscarMinutasBanco]);
 
   /**
-   * ALTERAR TIPO DE PAGAMENTO DINAMICAMENTE
+   * IMPORTAÇÃO E PROCESSAMENTO DA PLANILHA EXCEL
    */
-  const handleAlterarTipoPgto = async (minutaId: string, novoTipo: string) => {
-    try {
-      setCarregando(true);
-      const res = await fetch(`${apiUrl}/importacao/alterar-tipo-pgto`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-        },
-        body: JSON.stringify({ minutaId, novoTipoPgto: novoTipo }),
-      });
-
-      const resultado = await res.json();
-      if (res.ok && resultado.sucesso) {
-        setMensagemStatus(`🎉 Modalidade alterada para ${novoTipo} com sucesso!`);
-        await buscarMinutasBanco();
-      } else {
-        setMensagemStatus(`⚠️ ${resultado.mensagem}`);
-      }
-    } catch (e) {
-      setMensagemStatus('❌ Falha ao atualizar tipo de pagamento.');
-    } finally {
-      setCarregando(false);
-    }
-  };
-
   const handleImportacaoDireta = (e: React.ChangeEvent<HTMLInputElement>) => {
     const arquivo = e.target.files?.[0];
     if (!arquivo) return;
@@ -291,7 +271,7 @@ export default function ImportacaoPage() {
 
         if (resConfirmar.ok && resultadoConfirmar.sucesso) {
           await buscarMinutasBanco();
-          setMensagemStatus(`🎉 ${resultadoConfirmar.criados || minutasAnalisadas.length} viagem(ns) gravadas no banco com sucesso!`);
+          setMensagemStatus(`🎉 ${resultadoConfirmar.mensagem}`);
         } else {
           throw new Error(resultadoConfirmar.mensagem || 'Erro ao salvar lançamentos.');
         }
@@ -454,7 +434,7 @@ export default function ImportacaoPage() {
               ))}
             </div>
 
-            {/* TABELA DE REGISTOS COM TIPO DE PGTO EDITÁVEL */}
+            {/* TABELA DE REGISTOS - TEXTO ESTÁTICO DO TIPO PGTO (SEM SELETOR) */}
             <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '1.5rem', border: '1px solid #cbd5e1', overflowX: 'auto' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: '800', color: '#0f172a', marginBottom: '1rem' }}>
                 📋 Viagens Registadas ({minutasExibicao.length})
@@ -483,33 +463,29 @@ export default function ImportacaoPage() {
                     const isAVista = tipoStr.includes('VISTA');
 
                     const freteAjustado = Math.max(0, vFreteBase - descAdd);
-                    const vRpa = Number((freteAjustado * 0.027).toFixed(2));
                     const vDescAVista = isAVista ? Number((freteAjustado * 0.04).toFixed(2)) : 0;
-                    const vLiq = Number((freteAjustado - (vRpa + vDescAVista) + vPedagio).toFixed(2));
+                    const vRpa = Number((freteAjustado * 0.027).toFixed(2));
+                    const vLiq = Number((freteAjustado - vDescAVista - vRpa + vPedagio).toFixed(2));
 
                     return (
-                      <tr key={item._id} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: item.jaPagoNoBanco || item.statusPagamento === 'PAGO' ? '#f0fdf4' : '#ffffff' }}>
+                      <tr key={item._id || item.ref} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: item.jaPagoNoBanco || item.statusPagamento === 'PAGO' ? '#f0fdf4' : '#ffffff' }}>
                         <td style={estilos.td}>{item.ref || item.REF || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800' }}>{item.cavalo || item.CAVALO || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800', color: '#2563eb' }}>{item.conteiner || item.CONTEINER || '-'}</td>
                         <td style={estilos.td}>
-                          <select
-                            value={item.tipoPgto || 'PRAZO'}
-                            onChange={(e) => item._id && handleAlterarTipoPgto(item._id, e.target.value)}
-                            style={{
-                              padding: '0.35rem 0.5rem',
-                              borderRadius: '6px',
-                              border: '1px solid #cbd5e1',
-                              fontWeight: '700',
-                              backgroundColor: isAVista ? '#fef3c7' : '#ffffff',
-                              color: isAVista ? '#b45309' : '#0f172a',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            <option value="PRAZO">PRAZO</option>
-                            <option value="A VISTA">À VISTA (4% desc.)</option>
-                            <option value="INTEGRAL">INTEGRAL</option>
-                          </select>
+                          <span style={{
+                            padding: '0.35rem 0.65rem',
+                            borderRadius: '6px',
+                            fontWeight: '800',
+                            fontSize: '0.75rem',
+                            display: 'inline-block',
+                            backgroundColor: isAVista ? '#fef3c7' : '#f1f5f9',
+                            color: isAVista ? '#b45309' : '#334155',
+                            border: '1px solid',
+                            borderColor: isAVista ? '#fde68a' : '#cbd5e1'
+                          }}>
+                            {tipoStr}
+                          </span>
                         </td>
                         <td style={estilos.td}>R$ {vFreteBase.toFixed(2)}</td>
                         <td style={{ ...estilos.td, color: '#dc2626' }}>- R$ {vRpa.toFixed(2)}</td>
