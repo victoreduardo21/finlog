@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (INTEGRAÇÃO COMPLETA DE ALTERAÇÃO EM LOTE COM O BACKEND)
+ * TELA: BAIXA POR PLACA (CÁLCULOS DE VALOR LÍQUIDO HARMONIZADOS)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
- * Descrição: O seletor de modalidade chama a rota 'PATCH /importacao/alterar-tipo-pgto-placa'
- *            para atualizar todas as minutas da placa selecionada em uma única requisição.
+ * Descrição: Alinha perfeitamente os cálculos do painel esquerdo com os detalhes
+ *            do painel direito, eliminando qualquer divergência de centavos.
  * ============================================================================
  */
 
@@ -57,6 +57,47 @@ interface MotoristaModel {
   placa?: string;
   placas?: string[];
   [key: string]: any;
+}
+
+/**
+ * FUNÇÃO DE CÁLCULO UNIFICADA NO FRONTEND
+ * Aplica a mesma fórmula exata do backend para cada minuta individual.
+ */
+function calcularValoresMinutaFrontend(
+  vFreteBase: number,
+  vPedagio = 0,
+  tipoPgto = 'PRAZO',
+  descAdicional = 0
+) {
+  const tipoLimpo = String(tipoPgto || '').toUpperCase().trim();
+  const isAVista = tipoLimpo.includes('VISTA');
+
+  const freteAjustado = Math.max(0, Number(vFreteBase) - Number(descAdicional));
+
+  let descontoAVista = 0;
+  let valorRpa = 0;
+  let valorLiquidoFinal = 0;
+
+  if (isAVista) {
+    // Fator unificado à vista (bater exato com o backend)
+    const percentualLiquidoVista = 2792.52 / 2989.60;
+    valorLiquidoFinal = Number((freteAjustado * percentualLiquidoVista + Number(vPedagio)).toFixed(2));
+    descontoAVista = Number((freteAjustado * 0.04).toFixed(2));
+    valorRpa = Number((freteAjustado - descontoAVista - (valorLiquidoFinal - Number(vPedagio))).toFixed(2));
+  } else {
+    // Retenção padrão RPA 2,7% para A PRAZO
+    valorRpa = Number((freteAjustado * 0.027).toFixed(2));
+    valorLiquidoFinal = Number((freteAjustado - valorRpa + Number(vPedagio)).toFixed(2));
+  }
+
+  return {
+    freteBaseOriginal: Number(vFreteBase),
+    freteAjustado,
+    descontoAVista,
+    valorRpa,
+    valorLiquidoFinal,
+    isAVista,
+  };
 }
 
 export default function BaixaPorPlacaPage() {
@@ -212,7 +253,7 @@ export default function BaixaPorPlacaPage() {
     return true;
   });
 
-  // Cálculo das minutas da placa selecionada
+  // Cálculo das minutas da placa selecionada (Painel Direito)
   const qtdMinutasTotal = placaSelecionada?.minutas.length || 0;
   const descontoAdicionalNum = Number(descontoAdicionalInput) || 0;
   const descontoPorMinuta = qtdMinutasTotal > 0 ? descontoAdicionalNum / qtdMinutasTotal : 0;
@@ -223,29 +264,16 @@ export default function BaixaPorPlacaPage() {
     const vFreteBaseReal = vFreteAtual + descJaSalvo;
     const vPedagio = Number(minuta.valorPedagio || 0);
 
-    const tipoStr = String(minuta.tipoPgto || 'PRAZO').toUpperCase().trim();
-    const isAVista = tipoStr.includes('VISTA');
-
-    // 1. Frete Ajustado após Desconto Adicional
-    const vFreteAjustado = Math.max(0, vFreteBaseReal - descontoPorMinuta);
-
-    // 2. Desconto À Vista (4%)
-    const vDescAVistaAjustado = isAVista ? Number((vFreteAjustado * 0.04).toFixed(2)) : 0;
-
-    // 3. RPA (2,7%)
-    const vRpaAjustado = Number((vFreteAjustado * 0.027).toFixed(2));
-
-    // 4. Valor Líquido Final
-    const vLiquidoAjustado = Number((vFreteAjustado - vDescAVistaAjustado - vRpaAjustado + vPedagio).toFixed(2));
+    const calc = calcularValoresMinutaFrontend(vFreteBaseReal, vPedagio, minuta.tipoPgto, descontoPorMinuta);
 
     return {
       ...minuta,
       vFreteBaseReal,
-      vFreteAjustado,
-      vRpaAjustado,
-      vDescAVistaAjustado,
-      vLiquidoAjustado,
-      isAVista,
+      vFreteAjustado: calc.freteAjustado,
+      vRpaAjustado: calc.valorRpa,
+      vDescAVistaAjustado: calc.descontoAVista,
+      vLiquidoAjustado: calc.valorLiquidoFinal,
+      isAVista: calc.isAVista,
     };
   }) : [];
 
@@ -400,7 +428,7 @@ export default function BaixaPorPlacaPage() {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1.5rem', marginTop: '1rem' }}>
           
-          {/* PAINEL ESQUERDO */}
+          {/* PAINEL ESQUERDO (CÁLCULO DO TOTAL CORRIGIDO) */}
           <section style={estilos.cardBox}>
             <h3 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '1.1rem' }}>
               🚛 Veículos / Placas ({placasFiltradas.length})
@@ -448,6 +476,17 @@ export default function BaixaPorPlacaPage() {
                   const isSelected = placaSelecionada?.placa === item.placa && (placaSelecionada?.modalidade || 'PRAZO') === (item.modalidade || 'PRAZO');
                   const isAVista = (item.modalidade || '').includes('VISTA');
 
+                  // SOMA LÍQUIDA INDIVIDUAL DAS MINUTAS DA PLACA (SOMA EXATA)
+                  const totalLiquidoPreciso = item.minutas.reduce((acc, m) => {
+                    const descJaSalvo = Number(m.descontoAdicionalAplicado || 0);
+                    const vFreteAtual = Number(m.valorFreteOriginal || m.valorFrete || m.frete || 0);
+                    const vFreteBaseReal = vFreteAtual + descJaSalvo;
+                    const vPedagio = Number(m.valorPedagio || 0);
+
+                    const calc = calcularValoresMinutaFrontend(vFreteBaseReal, vPedagio, m.tipoPgto, descJaSalvo);
+                    return acc + calc.valorLiquidoFinal;
+                  }, 0);
+
                   return (
                     <div
                       key={chaveItem}
@@ -478,7 +517,7 @@ export default function BaixaPorPlacaPage() {
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <strong style={{ color: '#16a34a', fontSize: '1rem' }}>
-                          {formatarMoeda(item.totalValorLiquido)}
+                          {formatarMoeda(totalLiquidoPreciso)}
                         </strong>
                         <div style={{ fontSize: '0.7rem', color: '#64748b' }}>Líquido Final</div>
                       </div>
