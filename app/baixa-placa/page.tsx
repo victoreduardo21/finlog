@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: BAIXA POR PLACA (CÁLCULOS DE VALOR LÍQUIDO HARMONIZADOS)
+ * TELA: BAIXA POR PLACA (CÁLCULOS DE VALOR LÍQUIDO E DESCONTO DEDUTÍVEL)
  * Localização no projeto: web/app/baixa-placa/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
  * Descrição: Alinha perfeitamente os cálculos do painel esquerdo com os detalhes
- *            do painel direito, eliminando qualquer divergência de centavos.
+ *            do painel direito e aplica descontos adicionais em tempo real.
  * ============================================================================
  */
 
@@ -79,13 +79,11 @@ function calcularValoresMinutaFrontend(
   let valorLiquidoFinal = 0;
 
   if (isAVista) {
-    // Fator unificado à vista (bater exato com o backend)
     const percentualLiquidoVista = 2792.52 / 2989.60;
     valorLiquidoFinal = Number((freteAjustado * percentualLiquidoVista + Number(vPedagio)).toFixed(2));
     descontoAVista = Number((freteAjustado * 0.04).toFixed(2));
     valorRpa = Number((freteAjustado - descontoAVista - (valorLiquidoFinal - Number(vPedagio))).toFixed(2));
   } else {
-    // Retenção padrão RPA 2,7% para A PRAZO
     valorRpa = Number((freteAjustado * 0.027).toFixed(2));
     valorLiquidoFinal = Number((freteAjustado - valorRpa + Number(vPedagio)).toFixed(2));
   }
@@ -104,19 +102,15 @@ export default function BaixaPorPlacaPage() {
   const router = useRouter();
   const [usuario, setUsuario] = useState<{ nome: string; perfil: string } | null>(null);
   
-  // Lista de placas agrupadas e seleção ativa
   const [listaPlacas, setListaPlacas] = useState<PlacaAgrupada[]>([]);
   const [placaSelecionada, setPlacaSelecionada] = useState<PlacaAgrupada | null>(null);
   
-  // Filtros do painel esquerdo
   const [termoPesquisa, setTermoPesquisa] = useState<string>('');
   const [filtroTipoPgto, setFiltroTipoPgto] = useState<'TODOS' | 'A VISTA' | 'PRAZO' | 'INTEGRAL'>('TODOS');
 
-  // Motorista associado
   const [motoristaVinculado, setMotoristaVinculado] = useState<MotoristaModel | null>(null);
   const [carregandoMotorista, setCarregandoMotorista] = useState<boolean>(false);
   
-  // Formulário de baixa
   const [dataPagamento, setDataPagamento] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -127,14 +121,10 @@ export default function BaixaPorPlacaPage() {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  // Helper para formatação em BRL
   const formatarMoeda = (valor: number) => {
     return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
-  /**
-   * BUSCA MINUTAS AGRUPADAS POR PLACA E MODALIDADE NO BACKEND
-   */
   const carregarDadosAgrupados = useCallback(async () => {
     setCarregando(true);
     setMensagemStatus('⏳ A carregar veículos e minutas pendentes...');
@@ -161,7 +151,6 @@ export default function BaixaPorPlacaPage() {
     }
   }, [apiUrl]);
 
-  // Consulta motorista cadastrado para a placa
   const buscarMotoristaPorPlaca = useCallback(async (placa: string) => {
     if (!placa) return;
     setCarregandoMotorista(true);
@@ -194,9 +183,6 @@ export default function BaixaPorPlacaPage() {
     carregarDadosAgrupados();
   }, [router, carregarDadosAgrupados]);
 
-  /**
-   * ALTERAÇÃO EM LOTE DA MODALIDADE VIA ENDPOINT DEDICADO DO BACKEND
-   */
   const handleAlterarTipoPgtoEmLote = async (novoTipo: string) => {
     if (!placaSelecionada || placaSelecionada.minutas.length === 0) return;
 
@@ -239,7 +225,6 @@ export default function BaixaPorPlacaPage() {
     }
   };
 
-  // Aplicação dos filtros de busca e modalidade na lista lateral
   const placasFiltradas = listaPlacas.filter((p) => {
     const bateuPlaca = p.placa.toUpperCase().includes(termoPesquisa.toUpperCase().trim());
     if (!bateuPlaca) return false;
@@ -253,22 +238,19 @@ export default function BaixaPorPlacaPage() {
     return true;
   });
 
-  // Cálculo das minutas da placa selecionada (Painel Direito)
   const qtdMinutasTotal = placaSelecionada?.minutas.length || 0;
   const descontoAdicionalNum = Number(descontoAdicionalInput) || 0;
   const descontoPorMinuta = qtdMinutasTotal > 0 ? descontoAdicionalNum / qtdMinutasTotal : 0;
 
   const minutasProcessadas = placaSelecionada ? placaSelecionada.minutas.map((minuta) => {
-    const descJaSalvo = Number(minuta.descontoAdicionalAplicado || 0);
     const vFreteAtual = Number(minuta.valorFreteOriginal || minuta.valorFrete || minuta.frete || 0);
-    const vFreteBaseReal = vFreteAtual + descJaSalvo;
     const vPedagio = Number(minuta.valorPedagio || 0);
 
-    const calc = calcularValoresMinutaFrontend(vFreteBaseReal, vPedagio, minuta.tipoPgto, descontoPorMinuta);
+    const calc = calcularValoresMinutaFrontend(vFreteAtual, vPedagio, minuta.tipoPgto, descontoPorMinuta);
 
     return {
       ...minuta,
-      vFreteBaseReal,
+      vFreteBaseReal: vFreteAtual,
       vFreteAjustado: calc.freteAjustado,
       vRpaAjustado: calc.valorRpa,
       vDescAVistaAjustado: calc.descontoAVista,
@@ -282,7 +264,6 @@ export default function BaixaPorPlacaPage() {
   const totalDescAVistaCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vDescAVistaAjustado, 0);
   const valorFinalPagoCalculado = minutasProcessadas.reduce((acc, item) => acc + item.vLiquidoAjustado, 0);
 
-  // Seleciona uma placa manualmente e fixa a seleção
   const selecionarPlaca = (item: PlacaAgrupada) => {
     setPlacaSelecionada(item);
     const descSalvo = item.minutas.reduce((acc, m) => acc + (m.descontoAdicionalAplicado || 0), 0);
@@ -291,7 +272,7 @@ export default function BaixaPorPlacaPage() {
   };
 
   /**
-   * SALVA O DESCONTO ADICIONAL
+   * SALVA O DESCONTO ADICIONAL E ATUALIZA OS ESTADOS LOCAIS INSTANTANEAMENTE
    */
   const salvarApenasDesconto = async () => {
     if (!placaSelecionada) return;
@@ -322,6 +303,32 @@ export default function BaixaPorPlacaPage() {
         throw new Error(resultado.mensagem || 'Falha ao salvar desconto.');
       }
 
+      // Atualiza o desconto em cada minuta no estado da placa selecionada
+      const descPorMinuta = placaSelecionada.minutas.length > 0 
+        ? descontoAdicionalNum / placaSelecionada.minutas.length 
+        : 0;
+
+      const minutasAtualizadas = placaSelecionada.minutas.map((m) => ({
+        ...m,
+        descontoAdicionalAplicado: descPorMinuta,
+      }));
+
+      const novaPlacaSelecionada = {
+        ...placaSelecionada,
+        minutas: minutasAtualizadas,
+      };
+
+      setPlacaSelecionada(novaPlacaSelecionada);
+
+      // Atualiza a lista lateral para refletir os valores recalculados imediatamente
+      setListaPlacas((prev) =>
+        prev.map((item) =>
+          item.placa === placaSelecionada.placa && item.modalidade === placaSelecionada.modalidade
+            ? novaPlacaSelecionada
+            : item
+        )
+      );
+
       setMensagemStatus(`🎉 ${resultado.mensagem}`);
       await carregarDadosAgrupados();
     } catch (erro: any) {
@@ -331,9 +338,6 @@ export default function BaixaPorPlacaPage() {
     }
   };
 
-  /**
-   * EXECUTA A BAIXA DEFINITIVA DAS MINUTAS
-   */
   const executarBaixa = async (placaAlvo: string) => {
     if (!placaAlvo || !placaSelecionada) return;
 
@@ -428,7 +432,7 @@ export default function BaixaPorPlacaPage() {
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '1.5rem', marginTop: '1rem' }}>
           
-          {/* PAINEL ESQUERDO (CÁLCULO DO TOTAL CORRIGIDO) */}
+          {/* PAINEL ESQUERDO */}
           <section style={estilos.cardBox}>
             <h3 style={{ margin: '0 0 0.75rem 0', color: '#0f172a', fontSize: '1.1rem' }}>
               🚛 Veículos / Placas ({placasFiltradas.length})
@@ -476,14 +480,17 @@ export default function BaixaPorPlacaPage() {
                   const isSelected = placaSelecionada?.placa === item.placa && (placaSelecionada?.modalidade || 'PRAZO') === (item.modalidade || 'PRAZO');
                   const isAVista = (item.modalidade || '').includes('VISTA');
 
-                  // SOMA LÍQUIDA INDIVIDUAL DAS MINUTAS DA PLACA (SOMA EXATA)
+                  const descTotalPlaca = isSelected 
+                    ? descontoAdicionalNum 
+                    : item.minutas.reduce((acc, m) => acc + (m.descontoAdicionalAplicado || 0), 0);
+                  
+                  const descPorMinutaLocal = item.minutas.length > 0 ? descTotalPlaca / item.minutas.length : 0;
+
                   const totalLiquidoPreciso = item.minutas.reduce((acc, m) => {
-                    const descJaSalvo = Number(m.descontoAdicionalAplicado || 0);
                     const vFreteAtual = Number(m.valorFreteOriginal || m.valorFrete || m.frete || 0);
-                    const vFreteBaseReal = vFreteAtual + descJaSalvo;
                     const vPedagio = Number(m.valorPedagio || 0);
 
-                    const calc = calcularValoresMinutaFrontend(vFreteBaseReal, vPedagio, m.tipoPgto, descJaSalvo);
+                    const calc = calcularValoresMinutaFrontend(vFreteAtual, vPedagio, m.tipoPgto, descPorMinutaLocal);
                     return acc + calc.valorLiquidoFinal;
                   }, 0);
 
@@ -554,7 +561,6 @@ export default function BaixaPorPlacaPage() {
                     </p>
                   </div>
 
-                  {/* SELETOR DE MODALIDADE E BOTÃO DE BAIXA */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
                       <label style={{ fontSize: '0.7rem', fontWeight: '700', color: '#64748b' }}>
@@ -592,7 +598,6 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* ALERTA / DADOS DO MOTORISTA */}
                 <div style={estilos.cardMotorista}>
                   {carregandoMotorista ? (
                     <span style={{ fontSize: '0.85rem', color: '#64748b' }}>⏳ A buscar dados do motorista...</span>
@@ -618,7 +623,6 @@ export default function BaixaPorPlacaPage() {
                   )}
                 </div>
 
-                {/* DATAS E DESCONTO ADICIONAL */}
                 <div style={estilos.painelAjustes}>
                   <div>
                     <label style={estilos.labelAjuste}>📅 Data do Pagamento *</label>
@@ -659,7 +663,6 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* CARTÕES FINANCEIROS */}
                 <div style={estilos.gridResumoPlaca}>
                   <div style={estilos.cardResumoItem}>
                     <span style={estilos.rotuloResumoItem}>Total Bruto (Com Desconto)</span>
@@ -684,7 +687,6 @@ export default function BaixaPorPlacaPage() {
                   </div>
                 </div>
 
-                {/* TABELA DE MINUTAS */}
                 <div style={{ overflowX: 'auto', marginTop: '1.25rem' }}>
                   <table style={estilos.tabela}>
                     <thead>
