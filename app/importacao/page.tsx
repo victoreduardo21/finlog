@@ -2,11 +2,10 @@
 
 /**
  * ============================================================================
- * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (SEM SELETOR DE MODALIDADE)
+ * TELA: IMPORTAÇÃO E FECHAMENTO DE MINUTAS (COM CONFIRMAÇÃO DE EXCLUSÃO)
  * Localização no VS Code: web/app/importacao/page.tsx
  * Tecnologias: Next.js (React / TypeScript), XLSX, API Express, MongoDB Atlas
- * Descrição: Exibe a tabela de minutas importadas mostrando o tipo de pagamento
- *            como texto simples (badge) sem permitir alteração por seletor.
+ * Descrição: Exibe minutas pendentes, filtra pagas e solicita confirmação antes de excluir.
  * ============================================================================
  */
 
@@ -128,16 +127,9 @@ export default function ImportacaoPage() {
       const isAVista = tipoStr.includes('VISTA');
       const isVistaOuIntegral = isAVista || tipoStr.includes('INTEGRAL');
 
-      // 1. Frete Ajustado após Desconto Adicional
       const freteAjustado = Math.max(0, vFreteBase - descAdd);
-
-      // 2. Desconto À Vista (4%) sobre o valor ajustado
       const vDescAVista = isAVista ? Number((freteAjustado * 0.04).toFixed(2)) : 0;
-
-      // 3. RPA (2,7%) sobre o valor ajustado
       const vRpa = Number((freteAjustado * 0.027).toFixed(2));
-
-      // 4. Valor Líquido Final
       const vLiq = Number((freteAjustado - vDescAVista - vRpa + vPedagio).toFixed(2));
 
       freteTotal += vFreteBase;
@@ -195,7 +187,7 @@ export default function ImportacaoPage() {
         calcularResumoFinanceiro(resultado.dados);
       }
     } catch (erro) {
-      console.warn('Não foi possível carregar minutas iniciais:', erro);
+      console.warn('Não foi possível carregar minutas pendentes:', erro);
     }
   }, [apiUrl, calcularResumoFinanceiro]);
 
@@ -217,6 +209,49 @@ export default function ImportacaoPage() {
 
     buscarMinutasBanco();
   }, [router, buscarMinutasBanco]);
+
+  /**
+   * FUNÇÃO DE EXCLUSÃO DE MINUTA COM SOLICITAÇÃO DE CONFIRMAÇÃO
+   */
+  const handleExcluirMinuta = async (minutaId?: string, refCode?: string) => {
+    if (!minutaId) {
+      setMensagemStatus('⚠️ Esta minuta ainda não foi salva no banco de dados para ser excluída.');
+      return;
+    }
+
+    // Modal de Confirmação antes de prosseguir
+    const confirmacao = window.confirm(
+      `⚠️ ATENÇÃO: Tem certeza de que deseja excluir a minuta/contêiner (REF: ${refCode || minutaId})?\nEsta ação não poderá ser desfeita.`
+    );
+
+    if (!confirmacao) return;
+
+    try {
+      setCarregando(true);
+      setMensagemStatus('⏳ A remover minuta do sistema...');
+
+      const token = localStorage.getItem('token');
+      const resposta = await fetch(`${apiUrl}/importacao/${minutaId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const resultado = await resposta.json();
+
+      if (resposta.ok && resultado.sucesso) {
+        setMensagemStatus(`🎉 ${resultado.mensagem}`);
+        const listaAtualizada = listaMinutas.filter((m) => m._id !== minutaId);
+        setListaMinutas(listaAtualizada);
+        calcularResumoFinanceiro(listaAtualizada);
+      } else {
+        throw new Error(resultado.mensagem || 'Falha ao excluir minuta.');
+      }
+    } catch (erro: any) {
+      setMensagemStatus(`❌ Erro: ${erro.message}`);
+    } finally {
+      setCarregando(false);
+    }
+  };
 
   /**
    * IMPORTAÇÃO E PROCESSAMENTO DA PLANILHA EXCEL
@@ -285,7 +320,6 @@ export default function ImportacaoPage() {
     leitor.readAsArrayBuffer(arquivo);
   };
 
-  // Filtro de exibição na tabela
   const minutasExibicao = listaMinutas.filter((m) => {
     if (filtroTipoPgto === 'TODOS') return true;
     const tp = String(m.tipoPgto || '').toUpperCase();
@@ -305,11 +339,10 @@ export default function ImportacaoPage() {
             Importação e Fechamento de Minutas
           </h1>
           <p style={{ color: '#64748b', margin: '0.25rem 0 0 0', fontSize: '0.9rem', fontWeight: '500' }}>
-            Totais em tempo real recalculados com RPA (2,7%) e Desconto À Vista (4%)
+            Apenas minutas pendentes exibidas. Pagamentos realizados são filtrados automaticamente.
           </p>
         </header>
 
-        {/* ÁREA DE IMPORTAÇÃO DE PLANILHA */}
         <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '1.5rem', marginBottom: '1.5rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
             <div>
@@ -333,7 +366,6 @@ export default function ImportacaoPage() {
 
         {listaMinutas.length > 0 && (
           <>
-            {/* CARTÕES FINANCEIROS GERAIS */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
               <div style={estilos.cardPadrao}>
                 <span style={estilos.tituloCard}>TOTAL LÍQUIDO A RECEBER</span>
@@ -362,7 +394,6 @@ export default function ImportacaoPage() {
               </div>
             </div>
 
-            {/* CARTÕES DETALHADOS: À VISTA/INTEGRAL VS A PRAZO */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1.5rem', marginBottom: '1.5rem' }}>
               <div style={{ backgroundColor: '#fffbeb', border: '1px solid #fde68a', borderRadius: '12px', padding: '1.25rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -412,7 +443,6 @@ export default function ImportacaoPage() {
               </div>
             </div>
 
-            {/* BOTÕES DE FILTRO POR MODALIDADE */}
             <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
               {(['TODOS', 'A VISTA', 'PRAZO', 'INTEGRAL'] as const).map((tipo) => (
                 <button
@@ -434,7 +464,6 @@ export default function ImportacaoPage() {
               ))}
             </div>
 
-            {/* TABELA DE REGISTOS - TEXTO ESTÁTICO DO TIPO PGTO (SEM SELETOR) */}
             <section style={{ backgroundColor: '#ffffff', borderRadius: '12px', padding: '1.5rem', border: '1px solid #cbd5e1', overflowX: 'auto' }}>
               <h3 style={{ fontSize: '1.1rem', fontWeight: '800', color: '#0f172a', marginBottom: '1rem' }}>
                 📋 Viagens Registadas ({minutasExibicao.length})
@@ -451,6 +480,7 @@ export default function ImportacaoPage() {
                     <th style={estilos.th}>RPA (2,7%)</th>
                     <th style={estilos.th}>Líquido Final</th>
                     <th style={estilos.th}>Status</th>
+                    <th style={{ ...estilos.th, textAlign: 'center' }}>Ação</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -467,8 +497,10 @@ export default function ImportacaoPage() {
                     const vRpa = Number((freteAjustado * 0.027).toFixed(2));
                     const vLiq = Number((freteAjustado - vDescAVista - vRpa + vPedagio).toFixed(2));
 
+                    const isPago = item.statusPagamento === 'PAGO' || item.jaPagoNoBanco;
+
                     return (
-                      <tr key={item._id || item.ref} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: item.jaPagoNoBanco || item.statusPagamento === 'PAGO' ? '#f0fdf4' : '#ffffff' }}>
+                      <tr key={item._id || item.ref} style={{ borderBottom: '1px solid #e2e8f0', backgroundColor: isPago ? '#f0fdf4' : '#ffffff' }}>
                         <td style={estilos.td}>{item.ref || item.REF || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800' }}>{item.cavalo || item.CAVALO || '-'}</td>
                         <td style={{ ...estilos.td, fontWeight: '800', color: '#2563eb' }}>{item.conteiner || item.CONTEINER || '-'}</td>
@@ -492,8 +524,26 @@ export default function ImportacaoPage() {
                         <td style={{ ...estilos.td, fontWeight: '900', color: '#166534', fontSize: '0.9rem' }}>
                           R$ {vLiq.toFixed(2)}
                         </td>
-                        <td style={{ ...estilos.td, fontWeight: '700', color: item.statusPagamento === 'PAGO' ? '#15803d' : '#d97706' }}>
-                          {item.statusPagamento === 'PAGO' ? '✅ Pago' : item.mensagemAlerta || '⏳ Pendente'}
+                        <td style={{ ...estilos.td, fontWeight: '700', color: isPago ? '#15803d' : '#d97706' }}>
+                          {isPago ? '✅ Pago' : item.mensagemAlerta || '⏳ Pendente'}
+                        </td>
+                        <td style={{ ...estilos.td, textAlign: 'center' }}>
+                          <button
+                            onClick={() => handleExcluirMinuta(item._id, item.ref || item.conteiner)}
+                            title="Excluir minuta duplicada ou incorreta"
+                            style={{
+                              backgroundColor: '#fef2f2',
+                              color: '#dc2626',
+                              border: '1px solid #fecaca',
+                              borderRadius: '6px',
+                              padding: '0.35rem 0.6rem',
+                              fontWeight: '800',
+                              fontSize: '0.75rem',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            🗑️ Excluir
+                          </button>
                         </td>
                       </tr>
                     );
