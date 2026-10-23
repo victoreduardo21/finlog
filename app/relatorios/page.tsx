@@ -2,11 +2,11 @@
 
 /**
  * ============================================================================
- * TELA: RELATÓRIO DE PAGOS (CORREÇÃO DE COR DE TEXTO NOS INPUTS)
+ * TELA: RELATÓRIO DE PAGOS (COM BOTÃO DE EXCLUIR / ESTORNAR PAGAMENTO)
  * Localização no projeto: web/app/relatorios/page.tsx
  * Tecnologias: Next.js (React / TypeScript), Express API, MongoDB Atlas
- * Descrição: Garante que o texto digitado e as datas fiquem em tom azul/preto
- *            escuro bem visível (#0f172a).
+ * Descrição: Exibe pagamentos efetuados e permite estornar/excluir o pagamento
+ *            para que a minuta volte a ser PENDENTE no painel.
  * ============================================================================
  */
 
@@ -36,21 +36,16 @@ export default function RelatorioPagosPage() {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
-  // Formatação de moeda BRL
   const formatarMoeda = (valor: number) => {
     return Number(valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   };
 
-  // Formatação de data BR (DD/MM/AAAA)
   const formatarDataBR = (dataStr?: string) => {
     if (!dataStr) return '-';
     const data = new Date(dataStr);
     return isNaN(data.getTime()) ? '-' : data.toLocaleDateString('pt-BR');
   };
 
-  /**
-   * BUSCA O RELATÓRIO NO BACKEND
-   */
   const carregarRelatorioPagos = useCallback(async () => {
     setCarregando(true);
     setMensagemStatus('⏳ A carregar relatório de pagamentos...');
@@ -88,7 +83,44 @@ export default function RelatorioPagosPage() {
     carregarRelatorioPagos();
   }, [router, carregarRelatorioPagos]);
 
-  // FILTRAGEM DOS DADOS
+  /**
+   * FUNÇÃO PARA ESTORNAR/CANCELAR O PAGAMENTO DA PLACA
+   */
+  const handleEstornarPagamento = async (placa: string, dataPagamento: string) => {
+    const confirmacao = window.confirm(
+      `⚠️ ATENÇÃO: Deseja realmente estornar/cancelar o pagamento da placa ${placa}?\n\nAs minutas voltarão a ficar PENDENTES na tela de importação.`
+    );
+
+    if (!confirmacao) return;
+
+    try {
+      setCarregando(true);
+      setMensagemStatus('⏳ A estornar pagamento...');
+
+      const resposta = await fetch(`${apiUrl}/importacao/estornar-pagamento`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+        },
+        body: JSON.stringify({ placa, dataPagamento }),
+      });
+
+      const resultado = await resposta.json();
+
+      if (resposta.ok && resultado.sucesso) {
+        setMensagemStatus(`🎉 ${resultado.mensagem}`);
+        carregarRelatorioPagos();
+      } else {
+        throw new Error(resultado.mensagem || 'Falha ao estornar pagamento.');
+      }
+    } catch (erro: any) {
+      setMensagemStatus(`❌ Erro: ${erro.message}`);
+    } finally {
+      setCarregando(false);
+    }
+  };
+
   const relatorioFiltrado = listaRelatorio.filter((item) => {
     const bateuPlaca = item.placa.includes(termoPlaca.toUpperCase().trim());
     if (!bateuPlaca) return false;
@@ -117,9 +149,7 @@ export default function RelatorioPagosPage() {
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc', display: 'flex' }}>
-      {/* INJEÇÃO DE CSS GLOBAL PARA SOBRESCREVER COR DO NAVEGADOR/TAILWIND */}
       <style jsx global>{`
-        /* Força a cor preta/azul escura em todos os inputs da página */
         main input,
         main input[type="text"],
         main input[type="date"] {
@@ -130,14 +160,12 @@ export default function RelatorioPagosPage() {
           font-weight: 600 !important;
         }
 
-        /* Estilo do texto de ajuda (placeholder) */
         main input::placeholder {
           color: #94a3b8 !important;
           -webkit-text-fill-color: #94a3b8 !important;
           opacity: 1 !important;
         }
 
-        /* Ícone do calendário nos inputs de data */
         main input[type="date"]::-webkit-calendar-picker-indicator {
           filter: invert(0.2) !important;
           cursor: pointer;
@@ -162,10 +190,10 @@ export default function RelatorioPagosPage() {
             borderRadius: '8px',
             fontSize: '0.9rem',
             marginBottom: '1rem',
-            backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : mensagemStatus.includes('✅') ? '#f0fdf4' : '#fffbeb',
-            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('✅') ? '#166534' : '#b45309',
+            backgroundColor: mensagemStatus.includes('❌') ? '#fef2f2' : mensagemStatus.includes('✅') || mensagemStatus.includes('🎉') ? '#f0fdf4' : '#fffbeb',
+            color: mensagemStatus.includes('❌') ? '#991b1b' : mensagemStatus.includes('✅') || mensagemStatus.includes('🎉') ? '#166534' : '#b45309',
             border: '1px solid',
-            borderColor: mensagemStatus.includes('❌') ? '#fecaca' : mensagemStatus.includes('✅') ? '#bbf7d0' : '#fde68a',
+            borderColor: mensagemStatus.includes('❌') ? '#fecaca' : mensagemStatus.includes('✅') || mensagemStatus.includes('🎉') ? '#bbf7d0' : '#fde68a',
           }}>
             {mensagemStatus}
           </div>
@@ -230,7 +258,7 @@ export default function RelatorioPagosPage() {
           </div>
         </div>
 
-        {/* TABELA DE RESULTADOS */}
+        {/* TABELA DE RESULTADOS COM COLUNA DE AÇÃO */}
         <section style={{ ...estilos.cardBox, marginTop: '1.25rem' }}>
           <div style={{ overflowX: 'auto' }}>
             <table style={estilos.tabela}>
@@ -240,12 +268,13 @@ export default function RelatorioPagosPage() {
                   <th style={estilos.th}>Favorecido</th>
                   <th style={estilos.th}>Data de Pagamento</th>
                   <th style={estilos.th}>Valor Pago</th>
+                  <th style={{ ...estilos.th, textAlign: 'center' }}>Ação</th>
                 </tr>
               </thead>
               <tbody>
                 {relatorioFiltrado.length === 0 ? (
                   <tr>
-                    <td colSpan={4} style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
+                    <td colSpan={5} style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>
                       Nenhum pagamento encontrado para os filtros selecionados.
                     </td>
                   </tr>
@@ -264,6 +293,24 @@ export default function RelatorioPagosPage() {
                       <td style={{ ...estilos.td, fontWeight: 'bold', color: '#16a34a', fontSize: '1rem' }}>
                         {formatarMoeda(item.valorPago)}
                       </td>
+                      <td style={{ ...estilos.td, textAlign: 'center' }}>
+                        <button
+                          onClick={() => handleEstornarPagamento(item.placa, item.dataPagamento)}
+                          title="Estornar pagamento e mover de volta para pendentes"
+                          style={{
+                            backgroundColor: '#fef2f2',
+                            color: '#dc2626',
+                            border: '1px solid #fecaca',
+                            borderRadius: '6px',
+                            padding: '0.4rem 0.75rem',
+                            fontWeight: '700',
+                            fontSize: '0.78rem',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          🗑️ Estornar
+                        </button>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -276,7 +323,6 @@ export default function RelatorioPagosPage() {
   );
 }
 
-// ESTILOS DE ESTRUTURA
 const estilos: { [key: string]: React.CSSProperties } = {
   cardBox: { backgroundColor: '#ffffff', padding: '1.25rem', borderRadius: '12px', border: '1px solid #e2e8f0' },
   labelFiltro: { display: 'block', marginBottom: '0.35rem', fontSize: '0.8rem', fontWeight: '700', color: '#0f172a' },
