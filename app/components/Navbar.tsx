@@ -2,10 +2,11 @@
 
 /**
  * ============================================================================
- * COMPONENTE: BARRA DE NAVEGAÇÃO LATERAL COMPACTA (SIDEBAR)
+ * COMPONENTE: BARRA DE NAVEGAÇÃO LATERAL (SIDEBAR) COM LOGO DRB
  * Localização no projeto: web/components/Navbar.tsx
- * Tecnologias: Next.js 13+ (App Router), React, CSS-in-JS Inline
- * Descrição: Inclui o novo atalho para a tela de Relatórios de Minutas Pagas.
+ * Tecnologias: Next.js (App Router), React, CSS-in-JS Inline
+ * Descrição: Exibe a imagem de logo drb.jpeg da pasta public, a identificação
+ *            DRB Logística e o rodapé da GTS Global Tech Software.
  * ============================================================================
  */
 
@@ -24,7 +25,7 @@ export default function Sidebar({ usuario }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
 
-  // Lista dos links de navegação com o novo menu "Relatório de Pagos"
+  // Lista dos links de navegação da aplicação
   const itensMenu = [
     { nome: 'Importar Planilha', rota: '/importacao' },
     { nome: 'Baixa por Placa', rota: '/baixa-placa' },
@@ -36,7 +37,7 @@ export default function Sidebar({ usuario }: SidebarProps) {
     { nome: 'Configurações', rota: '/configuracoes' },
   ];
 
-  // Função para encerrar a sessão
+  // Função para encerrar a sessão do utilizador
   const handleLogout = () => {
     if (window.confirm('Deseja realmente sair do sistema?')) {
       localStorage.removeItem('token');
@@ -47,13 +48,23 @@ export default function Sidebar({ usuario }: SidebarProps) {
 
   return (
     <aside style={estilos.containerSidebar}>
-      {/* CABEÇALHO COMPACTO DA SIDEBAR */}
+      
+      {/* CABEÇALHO COM LOGO DRB E NOME DA EMPRESA */}
       <div style={estilos.cabecalho}>
-        <h2 style={estilos.tituloLogo}>Logística Fin</h2>
-        <p style={estilos.subtituloLogo}>Painel Operacional</p>
+        <div style={estilos.areaLogo}>
+          {/* Carrega o ficheiro drb.jpeg localizado na pasta web/public/drb.jpeg */}
+          <img
+            src="/drb.jpeg"
+            alt="Logo DRB Logística"
+            style={estilos.imagemLogo}
+          />
+        </div>
+
+        <p style={estilos.subtituloLogo}>PAINEL OPERACIONAL</p>
+        <p style={estilos.subtituloEmpresa}>DRB Logística</p>
       </div>
 
-      {/* NAVEGAÇÃO COMPACTA SEM SCROLLBAR */}
+      {/* NAVEGAÇÃO LATERAL */}
       <nav style={estilos.navegacao}>
         {itensMenu.map((item) => {
           const estaAtivo = pathname === item.rota;
@@ -77,22 +88,32 @@ export default function Sidebar({ usuario }: SidebarProps) {
         })}
       </nav>
 
-      {/* BOTÃO DE SAIR NO RODAPÉ */}
+      {/* RODAPÉ COM BOTAO DE SAÍDA E CRÉDITOS GTS */}
       <div style={estilos.rodape}>
         <button onClick={handleLogout} style={estilos.botaoSair}>
           🚪 Sair do Sistema
         </button>
+
+        <div style={estilos.creditosGts}>
+          <span style={{ display: 'block', fontSize: '0.65rem', color: '#64748b' }}>
+            Desenvolvido por
+          </span>
+          <strong style={{ fontSize: '0.7rem', color: '#38bdf8', letterSpacing: '0.3px' }}>
+            GTS Global Tech Software
+          </strong>
+        </div>
       </div>
+
     </aside>
   );
 }
 
-// ESTILOS COMPACTOS E OTIMIZADOS
+// ESTILOS DE ESTRUTURA E APRESENTAÇÃO
 const estilos: { [key: string]: React.CSSProperties } = {
   containerSidebar: {
     width: '240px',
     height: '100vh',
-    backgroundColor: '#0f172a', // Azul escuro Slate 900
+    backgroundColor: '#0f172a',
     color: '#f8fafc',
     position: 'fixed',
     top: 0,
@@ -109,25 +130,41 @@ const estilos: { [key: string]: React.CSSProperties } = {
     paddingBottom: '0.5rem',
     borderBottom: '1px solid #1e293b',
     textAlign: 'center',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
   },
-  tituloLogo: {
-    margin: 0,
-    fontSize: '1.2rem',
-    fontWeight: '700',
-    color: '#38bdf8', // Azul claro cyan
+  areaLogo: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: '0.35rem',
+  },
+  imagemLogo: {
+    maxHeight: '45px',
+    maxWidth: '160px',
+    objectFit: 'contain',
+    borderRadius: '8px',
   },
   subtituloLogo: {
-    margin: '0.1rem 0 0 0',
-    fontSize: '0.7rem',
+    margin: '0.2rem 0 0 0',
+    fontSize: '0.65rem',
     color: '#94a3b8',
     textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+  subtituloEmpresa: {
+    margin: '0.15rem 0 0 0',
+    fontSize: '0.8rem',
+    fontWeight: '800',
+    color: '#38bdf8',
     letterSpacing: '0.5px',
   },
   navegacao: {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
-    gap: '0.2rem', // Espaçamento reduzido
+    gap: '0.2rem',
     overflowY: 'hidden',
   },
   linkItem: {
@@ -142,7 +179,7 @@ const estilos: { [key: string]: React.CSSProperties } = {
     transition: 'all 0.15s ease-in-out',
   },
   linkItemAtivo: {
-    backgroundColor: '#2563eb', // Azul em destaque
+    backgroundColor: '#2563eb',
     color: '#ffffff',
     fontWeight: '600',
   },
@@ -162,6 +199,7 @@ const estilos: { [key: string]: React.CSSProperties } = {
     paddingTop: '0.75rem',
     borderTop: '1px solid #1e293b',
     marginTop: 'auto',
+    textAlign: 'center',
   },
   botaoSair: {
     width: '100%',
@@ -174,5 +212,10 @@ const estilos: { [key: string]: React.CSSProperties } = {
     fontWeight: '600',
     cursor: 'pointer',
     textAlign: 'center',
+  },
+  creditosGts: {
+    marginTop: '0.75rem',
+    paddingTop: '0.5rem',
+    borderTop: '1px dashed #1e293b',
   },
 };
